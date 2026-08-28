@@ -26,11 +26,12 @@ const XLSX_MIME =
 const DOCX_MIME =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
+/** "EMEA PAC — VIP session.xlsx" -> "EMEA PAC — VIP session — sanitized.xlsx" */
 function cleanedName(name: string, forceExtension?: string): string {
   const dot = name.lastIndexOf('.')
   const base = dot === -1 ? name : name.slice(0, dot)
   const ext = forceExtension ?? (dot === -1 ? '' : name.slice(dot))
-  return `${base}-cleaned${ext}`
+  return `${base} — sanitized${ext}`
 }
 
 /** Longest-first so `CUST-1234` is replaced before a shorter overlapping key. */
@@ -53,13 +54,27 @@ function applyMap(text: string, entries: [string, string][]): string {
 // Word
 // --------------------------------------------------------------------------
 
+interface Range {
+  start: number
+  end: number
+  to: string
+}
+
 /**
- * Replace text inside one paragraph.
+ * Replace text inside one paragraph, run by run.
  *
- * Word splits a sentence across several <w:t> runs, so a value can straddle
- * two nodes. We try a per-node replacement first (which preserves bold/italic
- * runs exactly); if a value still survives, we fall back to writing the whole
- * cleaned paragraph into the first run so nothing sensitive can slip through.
+ * Word freely splits a sentence across several <w:t> runs — a spell-check
+ * boundary is enough to do it — so "John Smith" is regularly stored as
+ * "John Sm" + "ith". Replacing node-by-node therefore misses things, and
+ * collapsing the whole paragraph into one run destroys the bold, italics and
+ * colours in it.
+ *
+ * So this works on the paragraph's concatenated plain text, maps each
+ * replacement back to character ranges, and rebuilds each run: text outside a
+ * range passes through untouched with its own formatting, the replacement is
+ * emitted in the run where the match began (inheriting that run's formatting),
+ * and the remaining covered characters are dropped. Every other run in the
+ * paragraph is left exactly as it was.
  */
 function rewriteParagraph(
   paragraph: string,
@@ -68,41 +83,59 @@ function rewriteParagraph(
   const nodes = [...paragraph.matchAll(TEXT_NODE_RE)]
   if (!nodes.length) return paragraph
 
-  const plain = nodes.map((n) => unescapeXml(n[2])).join('')
-  const hit = entries.filter(([from]) => plain.includes(from))
-  if (!hit.length) return paragraph
+  const bodies = nodes.map((n) => unescapeXml(n[2]))
+  const plain = bodies.join('')
 
-  // Pass 1 — node by node, formatting preserved.
-  let result = paragraph.replace(
-    TEXT_NODE_RE,
-    (_m, open: string, body: string, close: string) =>
-      `${open}${escapeXml(applyMap(unescapeXml(body), hit))}${close}`,
-  )
+  // Map every occurrence to a character range over the joined text.
+  const ranges: Range[] = []
+  for (const [from, to] of entries) {
+    if (!from || !plain.includes(from)) continue
+    let at = plain.indexOf(from)
+    while (at !== -1) {
+      const end = at + from.length
+      const clashes = ranges.some((r) => at < r.end && r.start < end)
+      if (!clashes) ranges.push({ start: at, end, to })
+      at = plain.indexOf(from, end)
+    }
+  }
+  if (!ranges.length) return paragraph
 
-  const after = [...result.matchAll(TEXT_NODE_RE)]
-    .map((n) => unescapeXml(n[2]))
-    .join('')
+  ranges.sort((a, b) => a.start - b.start)
 
-  if (!hit.some(([from]) => after.includes(from))) return result
+  const rewritten: string[] = []
+  let cursor = 0
 
-  // Pass 2 — value straddled runs: collapse the paragraph's text.
-  const cleaned = applyMap(plain, hit)
-  let first = true
-  result = paragraph.replace(
+  for (const body of bodies) {
+    const from = cursor
+    const to = cursor + body.length
+    cursor = to
+
+    let out = ''
+    for (let i = from; i < to; i++) {
+      const range = ranges.find((r) => i >= r.start && i < r.end)
+      if (!range) {
+        out += plain[i]
+      } else if (i === range.start) {
+        out += range.to
+      }
+      // Characters inside a range but not at its start are dropped — the
+      // replacement has already been emitted in the run where it started.
+    }
+    rewritten.push(out)
+  }
+
+  let index = 0
+  return paragraph.replace(
     TEXT_NODE_RE,
     (_m, open: string, _body: string, close: string) => {
-      if (first) {
-        first = false
-        const tag = open.includes('xml:space')
-          ? open
-          : open.replace(/>$/, ' xml:space="preserve">')
-        return `${tag}${escapeXml(cleaned)}${close}`
-      }
-      return `${open}${close}`
+      const body = rewritten[index++] ?? ''
+      // Preserve significant whitespace, which a rebuilt run can easily lose.
+      const tag = open.includes('xml:space')
+        ? open
+        : open.replace(/>$/, ' xml:space="preserve">')
+      return `${tag}${escapeXml(body)}${close}`
     },
   )
-
-  return result
 }
 
 async function rewriteDocx(
@@ -152,21 +185,34 @@ async function rewriteWorkbook(
         t?: string
         v?: unknown
         w?: string
+        z?: string
         h?: string
         r?: string
         f?: string
       }
       if (cell.v == null) continue
 
-      const original = String(cell.v)
-      const replaced = applyMap(original, entries)
-      if (replaced === original) continue
+      // The scanner reads formatted values (so a date reads as "2026-03-31"),
+      // which is what the user saw and what the finding matched. So try the
+      // formatted text first, then fall back to the raw value.
+      const formatted = cell.w ?? String(cell.v)
+      const raw = String(cell.v)
+      const replaced = applyMap(formatted, entries)
+      const replacedRaw = applyMap(raw, entries)
+
+      if (replaced === formatted && replacedRaw === raw) continue
+
+      const value = replaced !== formatted ? replaced : replacedRaw
+      const wasNumeric = cell.t === 'n' || cell.t === 'd'
 
       cell.t = 's'
-      cell.v = replaced
-      cell.w = replaced
+      cell.v = value
+      cell.w = value
+      // A number format on a now-textual cell renders as nonsense.
+      if (wasNumeric) delete cell.z
       delete cell.h
       delete cell.r
+      // Drop the formula: it would recompute and reintroduce the value.
       delete cell.f
     }
   }

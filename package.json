@@ -8,15 +8,24 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "check": "tsc -b && oxlint && npm run check:engine && npm run check:files",
+    "check": "tsc -b && oxlint && vitest run && npm run check:corpus && npm run check:classify && npm run check:files",
     "check:engine": "tsx scripts/engine-check.ts",
     "check:files": "tsx scripts/file-check.ts",
-    "samples": "tsx scripts/make-samples.ts"
+    "samples": "tsx scripts/make-samples.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:corpus": "tsx scripts/corpus-score.ts",
+    "check:heldout": "tsx scripts/heldout-score.ts",
+    "check:perf": "tsx scripts/perf.ts",
+    "check:classify": "tsx scripts/classify-score.ts",
+    "provision:model": "node scripts/provision-model.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "@xenova/transformers": "^2.17.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "gliner": "^0.0.19",
     "jszip": "^3.10.1",
     "lucide-react": "^1.35.0",
     "next-themes": "^0.4.6",
@@ -35,9 +44,11 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.1.0",
+    "onnxruntime-node": "1.19.2",
     "oxlint": "^1.79.0",
     "tsx": "^4.23.12",
     "typescript": "~6.0.2",
-    "vite": "^8.2.2"
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
   }
 }

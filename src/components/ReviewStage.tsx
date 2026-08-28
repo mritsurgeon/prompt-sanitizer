@@ -1,18 +1,33 @@
 import { useState } from 'react'
-import { ChevronDown, Copy, RotateCcw, Sparkles, Wand2 } from 'lucide-react'
+import {
+  ChevronDown,
+  Copy,
+  FileWarning,
+  RotateCcw,
+  Sparkles,
+  Wand2,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DetailsList } from '@/components/DetailsList'
 import { HighlightedText, type Highlight } from '@/components/HighlightedText'
 import { RiskDial } from '@/components/RiskDial'
 import { GROUP_META, GROUP_ORDER, category } from '@/engine/categories'
 import { LEVEL_COPY } from '@/engine/risk'
-import type { Finding, RiskSummary, SanitizeMode } from '@/engine/types'
+import type { DocumentClassification } from '@/engine/classify'
+import type {
+  DocumentSensitivity,
+  Finding,
+  RiskSummary,
+  SanitizeMode,
+} from '@/engine/types'
 import { cn } from '@/lib/utils'
 
 interface ReviewStageProps {
   text: string
   findings: Finding[]
   risk: RiskSummary
+  document: DocumentSensitivity
+  classification: DocumentClassification
   mode: SanitizeMode
   sourceLabel: string | null
   onToggleValue: (ids: string[], enabled: boolean) => void
@@ -25,6 +40,8 @@ export function ReviewStage({
   text,
   findings,
   risk,
+  document,
+  classification,
   mode,
   sourceLabel,
   onToggleValue,
@@ -86,6 +103,54 @@ export function ReviewStage({
               </div>
             )
           })}
+        </div>
+      )}
+
+      {(classification.documentType ||
+        classification.topics.length > 0) && (
+        <div className="animate-fade mt-6 flex flex-wrap items-center justify-center gap-2">
+          <span className="text-muted-foreground/70 text-xs">Looks like</span>
+          {classification.documentType && (
+            <span className="bg-card/70 border-border/70 rounded-full border px-3 py-1 text-xs font-medium">
+              {classification.documentType.label}
+            </span>
+          )}
+          {classification.topics.map((topic) => (
+            <span
+              key={topic.id}
+              className="text-muted-foreground bg-card/40 border-border/50 rounded-full border px-3 py-1 text-xs"
+            >
+              {topic.label}
+            </span>
+          ))}
+          {classification.functions.slice(0, 1).map((fn) => (
+            <span
+              key={fn.id}
+              className="text-muted-foreground/80 bg-card/40 border-border/50 rounded-full border px-3 py-1 text-xs"
+              title={fn.evidence.join('; ')}
+            >
+              {fn.label}
+              {fn.inferred ? '?' : ''}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {document.state !== 'general' && (
+        <div
+          className="animate-rise glass mt-7 flex w-full max-w-xl items-start gap-3 rounded-xl border border-l-4 px-4 py-3.5 text-left"
+          style={{ borderLeftColor: 'var(--risk-business)' }}
+        >
+          <FileWarning
+            className="mt-0.5 size-4 shrink-0"
+            style={{ color: 'var(--risk-business)' }}
+          />
+          <div className="min-w-0">
+            <p className="text-sm font-medium">{document.headline}</p>
+            <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
+              {document.summary}
+            </p>
+          </div>
         </div>
       )}
 

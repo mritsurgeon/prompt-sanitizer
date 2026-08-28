@@ -16,9 +16,13 @@ function report(label: string, text: string) {
   const result = scan(text)
   console.log(`\n=== ${label} — ${result.durationMs.toFixed(2)}ms ===`)
   console.log(`score ${result.risk.score} (${result.risk.level})`, result.risk.counts)
+  console.log(
+    `document: ${result.document.state} — ${result.document.headline}` +
+      (result.ambiguous.length ? ` · ${result.ambiguous.length} ambiguous` : ''),
+  )
   for (const f of result.findings) {
     console.log(
-      `  ${f.category.padEnd(18)} ${JSON.stringify(f.value).padEnd(48)} ${f.confidence.toFixed(2)}  ${f.rule}`,
+      `  ${f.category.padEnd(18)} ${JSON.stringify(f.value).padEnd(48)} ${f.confidence.toFixed(2)} ${f.tier.padEnd(6)} ${f.rule}`,
     )
   }
   return result

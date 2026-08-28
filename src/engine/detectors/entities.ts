@@ -1,4 +1,4 @@
-import type { Detector, Finding } from '../types'
+import type { Candidate, Detector } from '../types'
 import {
   ORG_SUFFIXES,
   hasInfraToken,
@@ -9,19 +9,20 @@ import {
   isSurname,
   isTechAcronym,
 } from '../gazetteer'
+import { ORG_OWNERSHIP_RE } from '../lexicon'
 
 /**
- * Layer 2 — lightweight local entity recognition.
+ * Layer 2a — candidate generation for people, companies and places.
  *
- * This is a compact gazetteer + context-cue recogniser rather than a neural
- * NER model. That is a deliberate trade: it is ~40 KB of word lists, runs in
- * under a millisecond, needs no download, no GPU and no network — which is
- * what "local-first" has to mean on a normal business laptop. The detectors
- * are pluggable (see `Detector`), so a GLiNER / spaCy backend can be dropped
- * in later without touching the rest of the app.
+ * This file deliberately does NOT decide anything. It proposes candidates with
+ * a `base` score reflecting only what the gazetteers know, and flags whether
+ * the surface form is ambiguous or unrecognised. All context weighing happens
+ * in `context.ts`, which keeps the two concerns separable and testable.
+ *
+ * It is a compact gazetteer + shape recogniser rather than a neural NER model:
+ * a few tens of kilobytes of word lists, well under a millisecond, no
+ * download, no GPU, no network.
  */
-
-type Raw = Omit<Finding, 'id' | 'enabled'>
 
 interface Token {
   text: string
@@ -77,6 +78,26 @@ const STREET_RE =
 /** Capitalised words, including O'Brien and Jean-Luc. */
 const CAP_TOKEN_RE = /\b[A-Z][A-Za-z'’-]*\b/g
 
+// Base scores. These reflect gazetteer support only — context does the rest.
+const BASE = {
+  titledFull: 0.9,
+  titledSingle: 0.85,
+  givenAndSurname: 0.96,
+  givenAndCapitalised: 0.85,
+  givenAlone: 0.7,
+  /** Two or more capitalised words no gazetteer recognises. */
+  unresolvedPhrase: 0.55,
+  /** A single capitalised word no gazetteer recognises. */
+  unresolvedToken: 0.3,
+  orgSuffix: 0.92,
+  orgTradingSuffix: 0.95,
+  orgOwnership: 0.85,
+  orgAllCapsAfterCue: 0.88,
+  orgAfterCue: 0.78,
+  place: 0.72,
+  street: 0.85,
+}
+
 function tokenize(text: string): Token[] {
   const tokens: Token[] = []
   const re = new RegExp(CAP_TOKEN_RE.source, 'g')
@@ -85,8 +106,7 @@ function tokenize(text: string): Token[] {
     let value = m[0]
     let end = m.index + value.length
     // "Smith's" -> "Smith"
-    const possessive = value.match(/['’]s$/)
-    if (possessive) {
+    if (/['’]s$/.test(value)) {
       value = value.slice(0, -2)
       end -= 2
     }
@@ -115,11 +135,6 @@ function sequences(text: string, tokens: Token[]): Token[][] {
   return groups
 }
 
-/**
- * The word immediately before `index`. Only spaces may sit between, so
- * "customer ACME" gives "customer" but "customer [COMPANY]. Her" gives
- * nothing for "Her" — punctuation ends the context.
- */
 function precedingWord(text: string, index: number): string {
   const match = text
     .slice(Math.max(0, index - 60), index)
@@ -129,11 +144,6 @@ function precedingWord(text: string, index: number): string {
 
 function isAllCaps(token: string) {
   return /^[A-Z][A-Z0-9&.]{1,}$/.test(token)
-}
-
-function startsSentence(text: string, index: number): boolean {
-  const before = text.slice(0, index).trimEnd()
-  return before.length === 0 || /[.!?:;\n]$/.test(before)
 }
 
 function orgSuffixAfter(text: string, end: number): string | null {
@@ -146,10 +156,9 @@ function orgSuffixAfter(text: string, end: number): string | null {
   return null
 }
 
-export function runEntityRules(text: string): Raw[] {
-  const out: Raw[] = []
-  const tokens = tokenize(text)
-  const groups = sequences(text, tokens)
+export function runEntityRules(text: string): Candidate[] {
+  const out: Candidate[] = []
+  const groups = sequences(text, tokenize(text))
 
   for (const raw of groups) {
     // Skip anything that is clearly infrastructure or an acronym soup.
@@ -184,17 +193,20 @@ export function runEntityRules(text: string): Raw[] {
     const group = raw.slice(offset)
     const first = group[0]
     const last = group[group.length - 1]
+    const value = text.slice(first.start, last.end)
+    const single = group.length === 1
 
     // ---- company: "ACME Holdings", "Northwind Traders Ltd" -------------
     if (group.length >= 2 && isOrgSuffixWord(last.text)) {
       out.push({
         category: 'ORGANISATION',
-        value: text.slice(first.start, last.end),
+        value,
         start: first.start,
         end: last.end,
-        confidence: 0.92,
+        base: BASE.orgSuffix,
         layer: 'entity',
         rule: `Company name ending in "${last.text}"`,
+        singleToken: false,
       })
       continue
     }
@@ -207,16 +219,33 @@ export function runEntityRules(text: string): Raw[] {
         value: text.slice(first.start, last.end + suffix.length),
         start: first.start,
         end: last.end + suffix.length,
-        confidence: 0.95,
+        base: BASE.orgTradingSuffix,
         layer: 'entity',
         rule: 'Company name with trading suffix',
+        singleToken: false,
+      })
+      continue
+    }
+
+    // ---- company: "Amazon is our customer" -----------------------------
+    // Ownership context after the name, which is how a customer usually gets
+    // named in an internal note.
+    if (ORG_OWNERSHIP_RE.test(text.slice(last.end)) && !isTechAcronym(value)) {
+      out.push({
+        category: 'ORGANISATION',
+        value,
+        start: first.start,
+        end: last.end,
+        base: BASE.orgOwnership,
+        layer: 'entity',
+        rule: 'Named as a customer, client or partner',
+        singleToken: single,
       })
       continue
     }
 
     // ---- company: "customer ACME" / "client Northwind" -----------------
     if (ORG_CUES.has(cue)) {
-      const value = text.slice(first.start, last.end)
       const looksPersonal = isFirstName(first.text)
       if (!looksPersonal && !isTechAcronym(value)) {
         out.push({
@@ -224,9 +253,10 @@ export function runEntityRules(text: string): Raw[] {
           value,
           start: first.start,
           end: last.end,
-          confidence: isAllCaps(first.text) ? 0.88 : 0.78,
+          base: isAllCaps(first.text) ? BASE.orgAllCapsAfterCue : BASE.orgAfterCue,
           layer: 'entity',
           rule: `Company name after "${cue}"`,
+          singleToken: single,
         })
         continue
       }
@@ -234,71 +264,95 @@ export function runEntityRules(text: string): Raw[] {
 
     // ---- place: "Cape Town", "Johannesburg" ---------------------------
     const joined = group.map((t) => t.text).join('')
-    if (isPlace(joined) || (group.length === 1 && isPlace(first.text))) {
+    if (isPlace(joined) || (single && isPlace(first.text))) {
       out.push({
         category: 'LOCATION',
-        value: text.slice(first.start, last.end),
+        value,
         start: first.start,
         end: last.end,
-        confidence: 0.72,
+        base: BASE.place,
         layer: 'entity',
         rule: 'Known city or country',
+        singleToken: single,
       })
       continue
     }
 
     // ---- people --------------------------------------------------------
-    const names = group.filter((t) => !isTechAcronym(t.text))
+    let names = group.filter((t) => !isTechAcronym(t.text))
     if (!names.length) continue
+
+    // A capitalised word can sit in front of a name without being part of it:
+    // "Later Sarah Mitchell emailed again". Trim leading tokens no gazetteer
+    // recognises when the next one is a known given name, so the same person
+    // yields the same value — and therefore the same stand-in — everywhere.
+    let nameStart = 0
+    while (
+      nameStart < names.length - 1 &&
+      !isFirstName(names[nameStart].text) &&
+      !isSurname(names[nameStart].text) &&
+      isFirstName(names[nameStart + 1].text)
+    ) {
+      nameStart += 1
+    }
+    if (nameStart > 0) names = names.slice(nameStart)
+    if (hasInfraToken(text.slice(names[0].start, names[names.length - 1].end))) {
+      continue
+    }
 
     const head = names[0]
     const tail = names[names.length - 1]
+    const nameValue = text.slice(head.start, tail.end)
     const firstIsGiven = isFirstName(head.text)
     const lastIsFamily = isSurname(tail.text)
     const multi = names.length >= 2 && names.length <= 4
+    const singleName = names.length === 1
 
-    let confidence = 0
+    let base = 0
     let rule = ''
+    let unresolved = false
 
     if (titled && multi) {
-      confidence = 0.96
+      base = BASE.titledFull
       rule = 'Title followed by a full name'
     } else if (titled) {
-      confidence = 0.9
+      base = BASE.titledSingle
       rule = 'Title followed by a name'
     } else if (multi && firstIsGiven && lastIsFamily) {
-      confidence = 0.96
+      base = BASE.givenAndSurname
       rule = 'Known given name and surname'
     } else if (multi && firstIsGiven) {
-      confidence = 0.9
+      base = BASE.givenAndCapitalised
       rule = 'Known given name followed by a capitalised surname'
-    } else if (multi && lastIsFamily && PERSON_CUES.has(cue)) {
-      confidence = 0.82
-      rule = `Known surname after "${cue}"`
-    } else if (!multi && firstIsGiven && PERSON_CUES.has(cue)) {
-      confidence = 0.85
-      rule = `Given name after "${cue}"`
-    } else if (
-      !multi &&
-      firstIsGiven &&
-      !isSentenceStarter(head.text) &&
-      !startsSentence(text, head.start)
-    ) {
-      confidence = 0.7
+    } else if (multi && lastIsFamily) {
+      base = BASE.givenAndCapitalised
+      rule = 'Capitalised word followed by a known surname'
+    } else if (singleName && firstIsGiven) {
+      base = BASE.givenAlone
       rule = 'Known given name'
+    } else if (multi) {
+      // Two or more capitalised words that no list recognises. Could be a name
+      // we have never seen, could be a product. Context decides — and this is
+      // the recall path that a gazetteer alone would miss entirely.
+      base = BASE.unresolvedPhrase
+      rule = 'Capitalised words that may be a name'
+      unresolved = true
+    } else {
+      base = BASE.unresolvedToken
+      rule = 'Capitalised word that may be a name'
+      unresolved = true
     }
-
-    if (!confidence) continue
-    if (hasInfraToken(text.slice(head.start, tail.end))) continue
 
     out.push({
       category: 'PERSON',
-      value: text.slice(head.start, tail.end),
+      value: nameValue,
       start: head.start,
       end: tail.end,
-      confidence,
+      base,
       layer: 'entity',
       rule,
+      singleToken: singleName,
+      unresolved,
     })
   }
 
@@ -311,7 +365,7 @@ export function runEntityRules(text: string): Raw[] {
       value: m[0],
       start: m.index,
       end: m.index + m[0].length,
-      confidence: 0.85,
+      base: BASE.street,
       layer: 'entity',
       rule: 'Street address',
     })

@@ -23,3 +23,12 @@ dist-ssr
 *.sln
 *.sw?
 .claude/
+
+# Provisioned model weights for bench/bench-gliner.mjs (~195 MB)
+bench/model
+
+# Provisioned zero-shot model weights for bench/bench-zeroshot.mjs (~188 MB)
+bench/zs
+
+# Provisioned model weights (npm run provision:model) — ~195 MB
+public/models

@@ -114,6 +114,10 @@ function synthetic(id: CategoryId, value: string, bump: number): string {
       return `REF-${pad(50000 + n, 5)}`
     case 'PROJECT_CODE':
       return pick(PROJECTS, seed, bump)
+    case 'RELEASE_PLAN':
+      return `Q${1 + (n % 4)} 20${30 + (n % 5)}`
+    case 'PRICING_TERM':
+      return `${5 + (n % 20)}% discount`
     case 'LICENSE_KEY':
       return `EXMP-${pad(n, 4)}-${pad((n * 7) % 10000, 4)}-${pad((n * 13) % 10000, 4)}`
     case 'UUID':

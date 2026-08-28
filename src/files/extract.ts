@@ -6,7 +6,7 @@
  * the tab needs them to write a cleaned copy back out.
  */
 
-import { PARAGRAPH_RE, paragraphText } from './wordXml'
+import { PARAGRAPH_RE, TEXT_PARTS_RE, paragraphText } from './wordXml'
 
 export type FileKind = 'txt' | 'csv' | 'docx' | 'xlsx' | 'pdf'
 
@@ -20,7 +20,17 @@ export interface ExtractedFile {
   buffer: ArrayBuffer
   /** e.g. "3 sheets · 240 rows" — shown on the file chip. */
   detail: string
+  /** Worksheet names, which the document assessment treats as metadata. */
+  sheetNames?: string[]
+  /**
+   * Set when the text was flattened from separate values (spreadsheet cells),
+   * so the scanner can refuse findings that straddle two of them.
+   */
+  structuralDelimiter?: string
 }
+
+/** How spreadsheet cells are joined when flattened into scannable text. */
+export const CELL_DELIMITER = ' | '
 
 export const ACCEPTED_EXTENSIONS = [
   '.txt',
@@ -68,7 +78,7 @@ const decoder = new TextDecoder()
 
 async function extractSpreadsheet(
   buffer: ArrayBuffer,
-): Promise<{ text: string; detail: string }> {
+): Promise<{ text: string; detail: string; sheetNames: string[] }> {
   const XLSX = await import('xlsx')
   const book = XLSX.read(buffer, { type: 'array', cellDates: true })
 
@@ -89,7 +99,7 @@ async function extractSpreadsheet(
     for (const row of rows) {
       const line = row
         .map((cell) => (cell == null ? '' : String(cell)))
-        .join(' | ')
+        .join(CELL_DELIMITER)
         .replace(/(\s\|\s)+$/, '')
       if (line.trim()) chunks.push(line)
       rowCount += 1
@@ -101,6 +111,7 @@ async function extractSpreadsheet(
   return {
     text: chunks.join('\n').trim(),
     detail: `${sheets} sheet${sheets === 1 ? '' : 's'} · ${rowCount} rows`,
+    sheetNames: [...book.SheetNames],
   }
 }
 
@@ -116,13 +127,26 @@ async function extractDocx(
     )
   }
 
-  const xml = await main.async('string')
-  const text = (xml.match(PARAGRAPH_RE) ?? [])
-    .map(paragraphText)
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  // Scan every part that can hold visible text, not just the body. Headers and
+  // footers routinely carry the customer name and a classification marker, and
+  // the exporter rewrites them — so they have to be scanned too, or there
+  // would be no finding to apply.
+  const partNames = Object.keys(zip.files)
+    .filter((name) => TEXT_PARTS_RE.test(name))
+    .sort((a, b) => {
+      const rank = (n: string) =>
+        n.startsWith('word/document') ? 0 : n.includes('header') ? 1 : 2
+      return rank(a) - rank(b) || a.localeCompare(b)
+    })
 
+  const sections: string[] = []
+  for (const name of partNames) {
+    const xml = await zip.file(name)!.async('string')
+    const section = (xml.match(PARAGRAPH_RE) ?? []).map(paragraphText).join('\n')
+    if (section.trim()) sections.push(section)
+  }
+
+  const text = sections.join('\n\n').replace(/\n{3,}/g, '\n\n').trim()
   const words = text.split(/\s+/).filter(Boolean).length
   return { text, detail: `${words.toLocaleString()} words` }
 }
@@ -170,7 +194,7 @@ export async function extractFile(
   const buffer = await file.arrayBuffer()
   onProgress?.(0.3)
 
-  let extracted: { text: string; detail: string }
+  let extracted: { text: string; detail: string; sheetNames?: string[] }
 
   switch (kind) {
     case 'txt':
@@ -200,6 +224,8 @@ export async function extractFile(
     text: extracted.text,
     buffer,
     detail: extracted.detail,
+    sheetNames: extracted.sheetNames,
+    structuralDelimiter: kind === 'xlsx' ? CELL_DELIMITER : undefined,
   }
 }
 

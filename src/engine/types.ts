@@ -8,7 +8,7 @@
 export type Severity = 'critical' | 'high' | 'medium' | 'low'
 
 /** Plain-English buckets we show to the user. No jargon leaks into the UI. */
-export type Group = 'personal' | 'internal' | 'secret'
+export type Group = 'personal' | 'internal' | 'confidential' | 'secret'
 
 export type CategoryId =
   // --- personal -----------------------------------------------------------
@@ -31,10 +31,13 @@ export type CategoryId =
   | 'CASE_ID'
   | 'CONTRACT_ID'
   | 'EMPLOYEE_ID'
-  | 'PROJECT_CODE'
   | 'LICENSE_KEY'
   | 'REFERENCE_ID'
   | 'UUID'
+  // --- company confidential / IP ------------------------------------------
+  | 'PROJECT_CODE'
+  | 'RELEASE_PLAN'
+  | 'PRICING_TERM'
   // --- secrets ------------------------------------------------------------
   | 'API_KEY'
   | 'PASSWORD'
@@ -42,7 +45,10 @@ export type CategoryId =
   | 'PRIVATE_KEY'
   | 'CONNECTION_STRING'
 
-export type DetectorLayer = 'pattern' | 'entity' | 'business'
+export type DetectorLayer = 'pattern' | 'entity' | 'business' | 'confidential'
+
+/** How sure the engine is, after context has been taken into account. */
+export type Tier = 'high' | 'medium' | 'low'
 
 export interface Category {
   id: CategoryId
@@ -63,6 +69,46 @@ export interface Category {
   priority: number
 }
 
+/**
+ * One piece of evidence for or against a candidate. Signals are what make the
+ * engine explainable: the same list drives the score and the "why" text.
+ */
+export interface Signal {
+  id: string
+  /** Positive supports the classification, negative argues against it. */
+  weight: number
+  /** Plain English, safe to show a non-technical user. */
+  note: string
+}
+
+/**
+ * What a detector emits. `base` is evidence from the detector alone; the
+ * context engine then adds signals to reach a final confidence.
+ */
+export interface Candidate {
+  category: CategoryId
+  value: string
+  start: number
+  end: number
+  layer: DetectorLayer
+  /** Human-readable rule name, for explainability. */
+  rule: string
+  /** Detector-only evidence, 0..1, before any context is considered. */
+  base: number
+  /** Signals the detector already knows about. */
+  signals?: Signal[]
+  /**
+   * The surface form is inherently ambiguous — a word that is both a name and
+   * ordinary English, or a capitalised token no gazetteer recognises. These
+   * need corroboration from context before they are believed.
+   */
+  ambiguous?: boolean
+  /** No gazetteer recognised this; it is a candidate purely from shape. */
+  unresolved?: boolean
+  /** Single-token candidates are held to a stricter standard. */
+  singleToken?: boolean
+}
+
 export interface Finding {
   id: string
   category: CategoryId
@@ -71,18 +117,24 @@ export interface Finding {
   /** Character offsets into the scanned text. */
   start: number
   end: number
-  /** 0..1 — how sure the engine is. Shown as High/Likely/Possible. */
+  /** 0..1 — how sure the engine is once context has been applied. */
   confidence: number
+  tier: Tier
   layer: DetectorLayer
   /** Human-readable rule name, for explainability. */
   rule: string
+  /** The evidence, for and against. Drives the UI explanation. */
+  signals: Signal[]
   /** Users can switch an individual finding off before cleaning. */
   enabled: boolean
+  /** Set when a second-stage confirmer resolved this finding. */
+  confirmedBy?: string
 }
 
 export interface RiskCounts {
   personal: number
   internal: number
+  confidential: number
   secret: number
   total: number
 }
@@ -93,6 +145,36 @@ export interface RiskSummary {
   score: number
   level: RiskLevel
   counts: RiskCounts
+}
+
+// ---------------------------------------------------------------------------
+// Document-level sensitivity — a different question from "is this PII?".
+// ---------------------------------------------------------------------------
+
+/**
+ * Deliberately conservative. We cannot know an organisation's actual
+ * classification policy, so the strongest thing we ever say is "potential".
+ */
+export type SensitivityState = 'general' | 'internal' | 'sensitive'
+
+export interface DocumentSensitivity {
+  state: SensitivityState
+  confidence: number
+  /** Headline shown to the user, e.g. "Potential company confidential information". */
+  headline: string
+  /** One plain-English sentence naming what drove the assessment. */
+  summary: string
+  signals: Signal[]
+  /** Distinct signal families that fired. Used to refuse keyword-only calls. */
+  topics: string[]
+}
+
+export interface DocumentMeta {
+  filename?: string
+  /** Worksheet names, for spreadsheets. */
+  sheetNames?: string[]
+  /** Detected headings, for documents. */
+  headings?: string[]
 }
 
 export type SanitizeMode = 'redact' | 'pseudonymize' | 'synthetic'
@@ -112,9 +194,9 @@ export interface SanitizeResult {
   valueMap: Map<string, string>
 }
 
-/** A detector is any function that turns text into findings. Add more freely. */
+/** A detector is any function that turns text into candidates. Add more freely. */
 export interface Detector {
   id: string
   layer: DetectorLayer
-  run: (text: string) => Omit<Finding, 'id' | 'enabled'>[]
+  run: (text: string) => Candidate[]
 }

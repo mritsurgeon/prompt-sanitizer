@@ -3,12 +3,23 @@ import { Switch } from '@/components/ui/switch'
 import { GROUP_META, GROUP_ORDER, category } from '@/engine/categories'
 import { groupByValue } from '@/engine/detect'
 import { previewReplacement } from '@/engine/sanitize'
-import type { Finding, Group, SanitizeMode } from '@/engine/types'
+import type { Finding, Group, SanitizeMode, Tier } from '@/engine/types'
 
-function certainty(confidence: number): string {
-  if (confidence >= 0.9) return 'Certain'
-  if (confidence >= 0.75) return 'Likely'
-  return 'Possible'
+/**
+ * Plain-English certainty. Deliberately two words, never a percentage — the
+ * user does not need the engine's arithmetic, only whether to trust it.
+ */
+function certainty(tier: Tier): string {
+  return tier === 'high' ? 'Certain' : 'Possible'
+}
+
+/** For an uncertain finding, the strongest piece of evidence is the useful bit. */
+function bestReason(finding: Finding): string | null {
+  if (finding.tier === 'high') return null
+  const supporting = finding.signals
+    .filter((s) => s.weight >= 0 && s.note)
+    .sort((a, b) => b.weight - a.weight)
+  return supporting[0]?.note ?? null
 }
 
 interface DetailsListProps {
@@ -94,13 +105,21 @@ export function DetailsList({
                           {meta2.label}
                         </span>
                         {' · '}
-                        {meta2.why}
+                        {bestReason(first) ?? meta2.why}
                       </p>
                     </div>
 
                     <div className="flex shrink-0 items-center gap-3">
-                      <span className="text-muted-foreground/70 hidden text-[0.7rem] tracking-wide uppercase sm:block">
-                        {certainty(first.confidence)}
+                      <span
+                        className="hidden text-[0.7rem] tracking-wide uppercase sm:block"
+                        style={{
+                          color:
+                            first.tier === 'high'
+                              ? undefined
+                              : 'var(--risk-medium)',
+                        }}
+                      >
+                        {certainty(first.tier)}
                       </span>
                       <Switch
                         checked={on}

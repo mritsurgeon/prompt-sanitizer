@@ -1,4 +1,4 @@
-import type { CategoryId, Detector, DetectorLayer, Finding } from '../types'
+import type { Candidate, CategoryId, Detector, DetectorLayer } from '../types'
 
 /**
  * Layer 1 — deterministic pattern matching.
@@ -51,6 +51,8 @@ const looksLikePhone = (value: string, match: RegExpExecArray, text: string) => 
   if (digits < 9 || digits > 15) return false
   // Dates and timestamps, not phone numbers.
   if (/\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(value)) return false
+  // Dotted version and build numbers: "12.1.0.2131", "9.0.0.1420".
+  if (/^\d+(?:\.\d+){2,}$/.test(value.trim())) return false
   const before = text[match.index - 1] ?? ' '
   const after = text[match.index + value.length] ?? ' '
   if (/[A-Za-z0-9._/@:$£€¥-]/.test(before)) return false
@@ -191,7 +193,10 @@ export const PATTERN_RULES: PatternRule[] = [
   {
     name: 'Phone number',
     category: 'PHONE',
-    pattern: /\+?\d[\d\s().-]{7,18}\d/g,
+    // Spaces and tabs only — never a line break. A phone number does not span
+    // two lines, but a table of build numbers will happily let a greedy match
+    // join "12.1.0.2131" to the next row's "2" and reach nine digits.
+    pattern: /\+?\d[\d \t().-]{7,18}\d/g,
     confidence: 0.85,
     validate: looksLikePhone,
   },
@@ -247,8 +252,8 @@ export function runRules(
   text: string,
   rules: PatternRule[],
   layer: DetectorLayer,
-): Omit<Finding, 'id' | 'enabled'>[] {
-  const out: Omit<Finding, 'id' | 'enabled'>[] = []
+): Candidate[] {
+  const out: Candidate[] = []
 
   for (const rule of rules) {
     const re = clone(rule.pattern)
@@ -290,7 +295,7 @@ export function runRules(
         value,
         start,
         end: start + value.length,
-        confidence: rule.confidence,
+        base: rule.confidence,
         layer,
         rule: rule.name,
       })

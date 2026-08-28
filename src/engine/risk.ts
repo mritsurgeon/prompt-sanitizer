@@ -22,6 +22,7 @@ export function computeRisk(findings: Finding[]): RiskSummary {
   const counts: RiskCounts = {
     personal: 0,
     internal: 0,
+    confidential: 0,
     secret: 0,
     total: active.length,
   }

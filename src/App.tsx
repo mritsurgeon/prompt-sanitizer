@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Header, PrivacyFooter } from '@/components/AppChrome'
 import { CleanStage } from '@/components/CleanStage'
@@ -8,11 +8,17 @@ import { ScanOverlay } from '@/components/ScanOverlay'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { DEMO_PROMPT } from '@/demo/samples'
-import { scan } from '@/engine/detect'
+import { scan, scanWithConfirmation } from '@/engine/detect'
 import { improvePrompt } from '@/engine/improve'
 import { computeRisk } from '@/engine/risk'
+import { recordAssessment } from '@/engine/feedback'
 import { sanitize } from '@/engine/sanitize'
-import type { Finding, SanitizeMode } from '@/engine/types'
+import type { DocumentClassification } from '@/engine/classify'
+import type {
+  DocumentSensitivity,
+  Finding,
+  SanitizeMode,
+} from '@/engine/types'
 import { buildCleanedFile, downloadBlob } from '@/files/exportFile'
 import { extractFile, type ExtractedFile } from '@/files/extract'
 
@@ -27,7 +33,14 @@ export default function App() {
 
   const [scannedText, setScannedText] = useState('')
   const [findings, setFindings] = useState<Finding[]>([])
+  const [document, setDocument] = useState<DocumentSensitivity | null>(null)
+  const [classification, setClassification] =
+    useState<DocumentClassification | null>(null)
   const [mode, setMode] = useState<SanitizeMode>('redact')
+
+  // The scan is async because ambiguous findings may get a second opinion, so
+  // the intro animation awaits it rather than racing it on a large document.
+  const scanRef = useRef<Promise<void> | null>(null)
 
   const [improveRequested, setImproveRequested] = useState(false)
   const [improving, setImproving] = useState(false)
@@ -82,12 +95,33 @@ export default function App() {
   }, [])
 
   const handleCheck = useCallback(() => {
-    const result = scan(text)
-    setScannedText(text)
-    setFindings(result.findings)
     setImproveRequested(false)
     setStage('scanning')
-  }, [text])
+
+    scanRef.current = (async () => {
+      const result = await scanWithConfirmation(text, {
+        meta: {
+          filename: file?.name,
+          sheetNames: file?.sheetNames,
+        },
+        structuralDelimiter: file?.structuralDelimiter,
+      })
+
+      setScannedText(text)
+      setFindings(result.findings)
+      setDocument(result.document)
+      setClassification(result.classification)
+      // Local-only, no raw content: the shape of this assessment, so a future
+      // classifier could be trained on real decisions.
+      recordAssessment(result, { filename: file?.name })
+    })()
+  }, [text, file])
+
+  /** Called when the intro animation finishes; waits for the scan if needed. */
+  const handleScanShown = useCallback(async () => {
+    await scanRef.current
+    setStage('review')
+  }, [])
 
   const handleToggleValue = useCallback((ids: string[], enabled: boolean) => {
     const set = new Set(ids)
@@ -173,15 +207,15 @@ export default function App() {
             />
           )}
 
-          {stage === 'scanning' && (
-            <ScanOverlay onDone={() => setStage('review')} />
-          )}
+          {stage === 'scanning' && <ScanOverlay onDone={handleScanShown} />}
 
-          {stage === 'review' && (
+          {stage === 'review' && document && classification && (
             <ReviewStage
               text={scannedText}
               findings={findings}
               risk={risk}
+              document={document}
+              classification={classification}
               mode={mode}
               sourceLabel={file?.name ?? null}
               onToggleValue={handleToggleValue}

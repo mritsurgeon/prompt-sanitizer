@@ -25,7 +25,10 @@ for (const name of [
   'incident-report.docx',
 ]) {
   const extracted = await extractFile(toFile(name))
-  const before = scan(extracted.text)
+  const before = scan(extracted.text, {
+    meta: { filename: name, sheetNames: extracted.sheetNames },
+    structuralDelimiter: extracted.structuralDelimiter,
+  })
 
   const cleaned = sanitize(extracted.text, before.findings, { mode: 'redact' })
   const output = await buildCleanedFile(extracted, cleaned.text, cleaned.valueMap)
@@ -33,12 +36,16 @@ for (const name of [
   const roundTripped = await extractFile(
     new File([await output.blob.arrayBuffer()], output.filename),
   )
-  const after = scan(roundTripped.text)
+  const after = scan(roundTripped.text, {
+    structuralDelimiter: roundTripped.structuralDelimiter,
+  })
   const ours = new Set(cleaned.replacements.map((r) => r.replacement))
   const leaked = after.findings.filter((f) => !ours.has(f.value))
 
   console.log(`\n=== ${name} (${extracted.detail}) ===`)
-  console.log(`  before: ${before.risk.score} · ${before.findings.length} findings`)
+  console.log(
+    `  before: ${before.risk.score} · ${before.findings.length} findings · document: ${before.document.state}`,
+  )
   console.log(`  wrote:  ${output.filename} (${output.blob.size} bytes)`)
   console.log(`  after:  ${after.risk.score} · ${leaked.length} leaked`)
 

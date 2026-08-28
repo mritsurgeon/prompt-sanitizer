@@ -34,6 +34,7 @@
   --risk-critical: oklch(0.62 0.23 22);
   --risk-high: oklch(0.68 0.2 40);
   --risk-medium: oklch(0.79 0.15 82);
+  --risk-business: oklch(0.62 0.19 285);
   --risk-safe: oklch(0.72 0.18 152);
 }
 
@@ -61,6 +62,7 @@
   --risk-critical: oklch(0.68 0.22 22);
   --risk-high: oklch(0.75 0.18 45);
   --risk-medium: oklch(0.83 0.15 85);
+  --risk-business: oklch(0.72 0.17 288);
   --risk-safe: oklch(0.78 0.19 154);
 }
 
@@ -92,6 +94,7 @@
   --color-risk-critical: var(--risk-critical);
   --color-risk-high: var(--risk-high);
   --color-risk-medium: var(--risk-medium);
+  --color-risk-business: var(--risk-business);
   --color-risk-safe: var(--risk-safe);
 
   --font-sans:

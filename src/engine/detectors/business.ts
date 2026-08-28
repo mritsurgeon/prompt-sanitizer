@@ -68,14 +68,6 @@ export const BUSINESS_RULES: PatternRule[] = [
     validate: (v) => /\d/.test(v) && /[A-Z]/.test(v),
   },
   {
-    name: 'Internal project name',
-    category: 'PROJECT_CODE',
-    pattern:
-      /\b(?:Project|Programme|Program|Initiative|Codename|Workstream)\s+([A-Z][A-Za-z0-9]{2,20})\b/g,
-    valueGroup: 1,
-    confidence: 0.8,
-  },
-  {
     name: 'Internal reference code',
     category: 'REFERENCE_ID',
     pattern: /\b[A-Z]{2,6}-\d{4,9}\b/g,

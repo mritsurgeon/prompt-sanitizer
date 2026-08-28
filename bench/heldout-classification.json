@@ -1,0 +1,86 @@
+[
+  {
+    "name": "Master services agreement",
+    "filename": "MSA_Northwind_2027.docx",
+    "documentType": "msa",
+    "topic": "legal",
+    "text": "MASTER SERVICES AGREEMENT\n\nThis Agreement is entered into between the parties named in the Order Form. Service levels are set out in Schedule 2. Term and termination are governed by clause 11. Governing law is England and Wales."
+  },
+  {
+    "name": "Purchase order",
+    "filename": "PO_44120.pdf",
+    "documentType": "purchase_order",
+    "topic": "procurement",
+    "text": "PURCHASE ORDER\n\nPO Number: 44120\nOrder date: 12 February 2027\nShip to: the warehouse address below\nBill to: accounts payable\nQuantity 40, unit price 320.00. Delivery date is 28 February. Raised against requisition 8891 by the buyer."
+  },
+  {
+    "name": "Commercial quote",
+    "filename": "quotation-8812.pdf",
+    "documentType": "quote",
+    "topic": "sales",
+    "text": "QUOTATION\n\nValid until 31 March 2027.\nPricing summary and scope of supply are below. List price 84000.00 with a negotiated discount. Optional items are marked. Total investment excludes tax."
+  },
+  {
+    "name": "Meeting minutes",
+    "filename": "minutes-2027-02-14.docx",
+    "documentType": "meeting_notes",
+    "topic": "operations",
+    "text": "Minutes of the meeting\n\nAttendees: six people. Apologies: two.\nAgenda and discussion recorded below. Action items each have an owner and a due date. Decisions were noted. Next meeting in a fortnight."
+  },
+  {
+    "name": "Information security policy",
+    "filename": "information-security-policy-v4.docx",
+    "documentType": "policy",
+    "topic": "it_security",
+    "text": "INFORMATION SECURITY POLICY\n\nThis policy sets out the rules for access control and encryption.\nScope of this policy: all employees and contractors. Responsibilities are listed by role. The policy owner reviews this annually. Compliance is mandatory."
+  },
+  {
+    "name": "High-level design",
+    "filename": "HLD-backup-platform.docx",
+    "documentType": "specification",
+    "topic": "it_security",
+    "text": "HIGH-LEVEL DESIGN\n\nRequirements and constraints are listed first, then the architecture.\nThe data flow between components is described, along with interfaces and the database schema. Assumptions are recorded in the appendix."
+  },
+  {
+    "name": "Status report",
+    "filename": "monthly-status-report.docx",
+    "documentType": "report",
+    "topic": "operations",
+    "text": "MONTHLY STATUS REPORT\n\nExecutive summary\n\nBackground and methodology are described first. The findings are set out by workstream, followed by recommendations and a conclusion. Detail is in the appendix."
+  },
+  {
+    "name": "Support case write-up",
+    "filename": "case-51203.txt",
+    "documentType": "support_case",
+    "topic": "it_security",
+    "text": "Case Number: 51203\nSeverity: high\n\nReported by the customer overnight. Steps to reproduce are below.\nA workaround has been supplied. Root cause is still under investigation. Escalated to second line."
+  },
+  {
+    "name": "Curriculum vitae",
+    "filename": "cv-applicant.pdf",
+    "documentType": "cv",
+    "topic": "hr",
+    "text": "CURRICULUM VITAE\n\nWork experience\n\nEmployment history is listed in reverse order, followed by education and qualifications. Skills and languages are summarised. References available on request."
+  },
+  {
+    "name": "Recruitment note",
+    "filename": "hiring-plan.docx",
+    "documentType": null,
+    "topic": "hr",
+    "text": "We are opening two roles this quarter. Recruitment will run through the usual agency, with onboarding planned for April. The headcount was approved as part of the annual remuneration review."
+  },
+  {
+    "name": "Marketing campaign brief",
+    "filename": "campaign-brief.docx",
+    "documentType": null,
+    "topic": "marketing",
+    "text": "The campaign brief covers brand positioning and messaging for the new audience. Collateral includes a webinar and three pieces of content. Lead generation targets are set out below."
+  },
+  {
+    "name": "Ordinary internal chatter",
+    "filename": "note.txt",
+    "documentType": null,
+    "topic": null,
+    "text": "Hi team, can someone pick up the thing we discussed yesterday? I will be out until Thursday and back on the Friday call. Thanks."
+  }
+]

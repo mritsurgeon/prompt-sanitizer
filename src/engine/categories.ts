@@ -188,15 +188,36 @@ const list: Category[] = [
     why: 'Employee numbers identify a specific colleague in your HR systems.',
     priority: 71,
   },
+  // --- company confidential / IP ------------------------------------------
   {
     id: 'PROJECT_CODE',
     label: 'Internal project name',
-    group: 'internal',
+    group: 'confidential',
     severity: 'medium',
     token: '[PROJECT_NAME]',
     pseudoPrefix: 'Project',
     why: 'Internal project names are often confidential before launch.',
     priority: 52,
+  },
+  {
+    id: 'RELEASE_PLAN',
+    label: 'Unreleased plan or date',
+    group: 'confidential',
+    severity: 'medium',
+    token: '[RELEASE_PLAN]',
+    pseudoPrefix: 'Release',
+    why: 'Release timing for something not yet announced is commercially sensitive.',
+    priority: 54,
+  },
+  {
+    id: 'PRICING_TERM',
+    label: 'Pricing or margin detail',
+    group: 'confidential',
+    severity: 'medium',
+    token: '[PRICING]',
+    pseudoPrefix: 'Pricing',
+    why: 'Discounts, margins and deal values are commercially sensitive.',
+    priority: 56,
   },
   {
     id: 'LICENSE_KEY',
@@ -306,6 +327,12 @@ export const GROUP_META: Record<
     blurb: 'Server names, customer numbers and other things specific to your company.',
     color: 'var(--risk-medium)',
   },
+  confidential: {
+    label: 'business-sensitive details',
+    singular: 'business-sensitive detail',
+    blurb: 'Roadmaps, pricing and internal plans that should stay inside the company.',
+    color: 'var(--risk-business)',
+  },
   secret: {
     label: 'possible secrets',
     singular: 'possible secret',
@@ -314,4 +341,9 @@ export const GROUP_META: Record<
   },
 }
 
-export const GROUP_ORDER: Group[] = ['secret', 'personal', 'internal']
+export const GROUP_ORDER: Group[] = [
+  'secret',
+  'personal',
+  'confidential',
+  'internal',
+]
