@@ -1,0 +1,223 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+/* ------------------------------------------------------------------ */
+/*  AI Safe — design tokens                                            */
+/*  Dark, high-contrast enterprise surface with a green safety accent.  */
+/* ------------------------------------------------------------------ */
+
+:root {
+  --radius: 0.9rem;
+
+  --background: oklch(0.985 0.002 250);
+  --foreground: oklch(0.16 0.015 260);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.16 0.015 260);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.16 0.015 260);
+  --primary: oklch(0.68 0.19 152);
+  --primary-foreground: oklch(0.13 0.03 160);
+  --secondary: oklch(0.96 0.005 250);
+  --secondary-foreground: oklch(0.2 0.015 260);
+  --muted: oklch(0.96 0.005 250);
+  --muted-foreground: oklch(0.5 0.015 260);
+  --accent: oklch(0.95 0.02 155);
+  --accent-foreground: oklch(0.2 0.03 160);
+  --destructive: oklch(0.6 0.22 25);
+  --border: oklch(0.9 0.008 260);
+  --input: oklch(0.92 0.008 260);
+  --ring: oklch(0.68 0.19 152);
+
+  /* semantic risk colours */
+  --risk-critical: oklch(0.62 0.23 22);
+  --risk-high: oklch(0.68 0.2 40);
+  --risk-medium: oklch(0.79 0.15 82);
+  --risk-safe: oklch(0.72 0.18 152);
+}
+
+.dark {
+  /* near-black with a cool cast, so the green accent reads as "live" */
+  --background: oklch(0.16 0.012 260);
+  --foreground: oklch(0.97 0.004 250);
+  --card: oklch(0.204 0.014 262);
+  --card-foreground: oklch(0.97 0.004 250);
+  --popover: oklch(0.22 0.014 262);
+  --popover-foreground: oklch(0.97 0.004 250);
+  --primary: oklch(0.76 0.2 154);
+  --primary-foreground: oklch(0.16 0.05 160);
+  --secondary: oklch(0.26 0.014 262);
+  --secondary-foreground: oklch(0.97 0.004 250);
+  --muted: oklch(0.26 0.014 262);
+  --muted-foreground: oklch(0.68 0.012 258);
+  --accent: oklch(0.3 0.03 158);
+  --accent-foreground: oklch(0.95 0.02 155);
+  --destructive: oklch(0.66 0.22 24);
+  --border: oklch(1 0 0 / 11%);
+  --input: oklch(1 0 0 / 14%);
+  --ring: oklch(0.76 0.2 154);
+
+  --risk-critical: oklch(0.68 0.22 22);
+  --risk-high: oklch(0.75 0.18 45);
+  --risk-medium: oklch(0.83 0.15 85);
+  --risk-safe: oklch(0.78 0.19 154);
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-risk-critical: var(--risk-critical);
+  --color-risk-high: var(--risk-high);
+  --color-risk-medium: var(--risk-medium);
+  --color-risk-safe: var(--risk-safe);
+
+  --font-sans:
+    'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono:
+    ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+
+  --animate-rise: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-fade: fade 0.35s ease both;
+  --animate-pop: pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  --animate-sweep: sweep 1.4s ease-in-out infinite;
+  --animate-breathe: breathe 3.5s ease-in-out infinite;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-synthesis-weight: none;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Ambient depth: two soft radial glows behind everything. */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(
+        60rem 40rem at 12% -10%,
+        color-mix(in oklch, var(--primary) 16%, transparent),
+        transparent 65%
+      ),
+      radial-gradient(
+        50rem 36rem at 92% 8%,
+        color-mix(in oklch, oklch(0.6 0.2 250) 12%, transparent),
+        transparent 60%
+      );
+  }
+
+  ::selection {
+    background: color-mix(in oklch, var(--primary) 35%, transparent);
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: color-mix(in oklch, var(--card) 78%, transparent);
+    backdrop-filter: blur(18px) saturate(140%);
+  }
+
+  .text-gradient {
+    background: linear-gradient(
+      100deg,
+      var(--foreground) 10%,
+      color-mix(in oklch, var(--primary) 85%, var(--foreground)) 90%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .scrollbar-slim {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, var(--foreground) 22%, transparent)
+      transparent;
+  }
+}

@@ -1,0 +1,5 @@
+"Case","Customer","Contact","Email","Phone","Server","IP","Status"
+"CASE-49281","ACME Holdings","Sarah Mitchell","sarah.mitchell@example.com","+27 82 555 0198","SQL-PROD-04","10.20.14.52","Open"
+"CASE-49307","Northwind Traders","David Kruger","david.kruger@example.com","+27 11 555 0142","VBR-SRV-01","10.20.14.61","Open"
+"CASE-49330","Cygnus Logistics","Priya Naidoo","priya.naidoo@example.com","+27 21 555 0177","ESXI-HOST-12","10.20.9.14","Escalated"
+"CASE-49355","Vertex Foods","Johan Botha","johan.botha@example.com","+27 31 555 0120","FS-CORP-02","10.20.31.8","Waiting"
