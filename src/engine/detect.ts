@@ -86,10 +86,14 @@ const MULTILINE_OK: Set<string> = new Set(['PRIVATE_KEY'])
 
 /**
  * Bounds on the recall path. A confirmer costs real time per candidate, and a
- * long document contains hundreds of unrecognised capitalised words, so the
- * most promising ones are offered and the rest are left alone.
+ * long document contains hundreds of unrecognised capitalised words, so only
+ * the most promising ones are offered and the rest are left alone.
+ *
+ * These are speculative — the rules had no opinion, we are simply asking. So
+ * the budget is small: the ambiguous findings are the ones that earned a
+ * second look, and they are never capped.
  */
-export const MAX_RECOVERABLE = 40
+export const MAX_RECOVERABLE = 12
 /**
  * Below this the rules had real evidence against it; leave it dropped. Set
  * clear of the arithmetic — a candidate scoring exactly at the boundary lands

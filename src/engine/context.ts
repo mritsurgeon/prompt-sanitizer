@@ -6,7 +6,6 @@ import {
   JOB_TITLE_RE,
   LOCATIVE_BEFORE,
   PERSON_VERBS,
-  PUBLIC_URL_PATHS,
   ROLE_CONTEXT_RE,
 } from './lexicon'
 import type {
@@ -51,7 +50,7 @@ export interface DocumentIndex {
   sensitivity?: DocumentSensitivity
 }
 
-const LOWERCASE_WORD_RE = /\b[a-z][a-z'-]{2,}\b/g
+const LOWERCASE_WORD_RE = /\p{Ll}[\p{Ll}'-]{2,}/gu
 
 /**
  * Categories whose text is machine-readable rather than natural language.
@@ -139,6 +138,32 @@ function restOfLine(text: string, index: number): string {
 function followingWord(line: string): string {
   const match = line.match(/^[ \t,)]*([A-Za-z']+)/)
   return match ? match[1].toLowerCase() : ''
+}
+
+/**
+ * The offset past which a line of its own no longer means "this is who the
+ * document is about" — the end of the third non-empty line.
+ */
+function headingZone(text: string): number {
+  let seen = 0
+  let cursor = 0
+  while (cursor < text.length && seen < 3) {
+    const newline = text.indexOf('\n', cursor)
+    const end = newline === -1 ? text.length : newline
+    if (text.slice(cursor, end).trim()) seen += 1
+    if (newline === -1) return text.length
+    cursor = newline + 1
+  }
+  return cursor
+}
+
+/** Is this span the only thing on its line? */
+function isWholeLine(text: string, start: number, end: number): boolean {
+  let from = start
+  while (from > 0 && text[from - 1] !== '\n') from -= 1
+  let to = end
+  while (to < text.length && text[to] !== '\n') to += 1
+  return text.slice(from, start).trim() === '' && text.slice(end, to).trim() === ''
 }
 
 function startsSentence(text: string, index: number): boolean {
@@ -242,7 +267,32 @@ function personSignals(
     }
   }
 
-  if (soft && startsSentence(text, candidate.start)) {
+  // A line containing nothing but the candidate is not a sentence, so the
+  // "capitalised only because it starts one" penalty does not apply. This is
+  // how documents introduce people — a CV opens with the name on its own line,
+  // and penalising that loses the most important name in the file. All-caps
+  // lines are excluded: those are section headings, not names.
+  // ...but only at the very top of the document. A CV puts the subject's name
+  // on line one; a skills list further down is also full of Title Case phrases
+  // alone on their own lines, and exempting those turns "Strategic Planning"
+  // and "Analytical Thinking" into people.
+  // ALL CAPS is allowed here: a CV header is as likely to read "IAN
+  // ENGELBRECHT" as "Ian Engelbrecht". Section headings in caps are caught by
+  // the everyday-noun and job-title guards instead of by their casing.
+  const ownsLine =
+    !candidate.singleToken &&
+    candidate.start <= headingZone(text) &&
+    isWholeLine(text, candidate.start, candidate.end)
+
+  if (ownsLine) {
+    signals.push(
+      signal(
+        'document-heading',
+        0.15,
+        'Stands alone at the top of the document, where a name is introduced',
+      ),
+    )
+  } else if (soft && startsSentence(text, candidate.start)) {
     signals.push(
       signal('sentence-start', -0.15, 'Capitalised only because it starts a sentence'),
     )
@@ -289,7 +339,10 @@ const PERSON_CUE_WORDS = new Set([
   'manager',
   'attention',
   'regards',
-  'from',
+  // "from" is deliberately absent: it precedes a person far less often than it
+  // precedes a thing ("from Console", "from the GUI", "from Q1"). A person
+  // after "from" is caught by the role context that follows them instead —
+  // "Rose from the finance team".
   'by',
   'assigned',
   'reported',
@@ -355,9 +408,10 @@ function urlSignals(candidate: Candidate): Signal[] {
   const hasQuery = value.includes('?') || value.includes('#')
   const segments = value.split('/').slice(3)
   const looksTokenised = segments.some((s) => s.length >= 20 && /\d/.test(s) && /[a-z]/i.test(s))
-  const publicPath = segments.some((s) => PUBLIC_URL_PATHS.has(s.toLowerCase()))
 
-  if (!hasQuery && !looksTokenised && (publicPath || segments.length <= 2)) {
+  // No query string and no token-shaped segment means an ordinary published
+  // page — a blog post or an article, not a link that identifies anybody.
+  if (!hasQuery && !looksTokenised) {
     return [
       signal(
         'public-link',

@@ -101,6 +101,35 @@ saopaulo riodejaneiro buenosaires santiago bogota lima mexicocity
 `)
 
 /**
+ * Countries and nationalities.
+ *
+ * Deliberately NOT in PLACES: knowing a document mentions South Africa does
+ * not identify anybody, and redacting it makes the cleaned text harder to read
+ * for no privacy gain. They are listed only so the recogniser can rule them
+ * out — without this, "South Africa" reads as an unrecognised capitalised
+ * phrase and gets guessed at as a person's name.
+ */
+export const COUNTRIES = words(`
+southafrica unitedkingdom unitedstates greatbritain germany france spain
+italy portugal netherlands holland belgium ireland poland sweden norway
+denmark finland switzerland austria greece turkey india china japan korea
+australia newzealand canada mexico brazil argentina chile colombia peru
+nigeria kenya ghana egypt morocco namibia botswana zimbabwe zambia
+mozambique angola tanzania uganda rwanda singapore malaysia indonesia
+thailand vietnam philippines pakistan bangladesh srilanka israel russia
+ukraine romania hungary czechia slovakia bulgaria croatia serbia scotland
+wales england britain america africa europe asia
+southafrican british american german french spanish italian dutch belgian
+irish polish swedish norwegian danish finnish swiss austrian greek turkish
+indian chinese japanese korean australian canadian mexican brazilian
+nigerian kenyan ghanaian egyptian moroccan namibian afrikaans english
+`)
+
+export function isCountry(value: string): boolean {
+  return COUNTRIES.has(value.toLowerCase().replace(/\s+/g, ''))
+}
+
+/**
  * Suffixes distinctive enough to mark a company even without a cue word, e.g.
  * a spreadsheet cell that just says "ACME Holdings". Deliberately excludes the
  * ambiguous short forms (SA, AG, NV, BV) which are also ordinary abbreviations.
@@ -109,7 +138,69 @@ export const STANDALONE_ORG_SUFFIXES = words(`
 ltd limited inc llc plc gmbh sarl corp corporation holdings group bank
 insurance solutions technologies systems industries enterprises consulting
 logistics healthcare motors foods
+software technology labs laboratories media studios ventures partners
+associates capital pharma pharmaceuticals telecom telecoms networks
+electronics
 `)
+
+/**
+ * Words that make a capitalised phrase a job title rather than a person.
+ * "Implementation Specialist" and "HPE Storage Ambassador" are roles; treating
+ * them as names is the most common mislabel in a CV or an org chart.
+ */
+export const JOB_TITLE_WORDS = words(`
+specialist consultant consultants engineer engineers architect architects
+manager managers director directors analyst analysts administrator
+technician technicians developer developers officer officers executive
+executives ambassador coordinator supervisor professional associate
+assistant president partner advisor adviser representative designer
+scientist strategist lead leader head chief principal intern trainee
+apprentice contractor freelancer generalist practitioner
+engineering consulting management administration development design
+marketing accounting finance science sciences studies mathematics physics
+chemistry biology economics law medicine nursing education computing
+informatics electronics architecture operations analysis
+`)
+
+/**
+ * Words that make a capitalised phrase an institution or qualification.
+ * "Pretoria Technicon" and "Hoër Tegniese Skool Springs" are places of study.
+ */
+export const INSTITUTION_WORDS = words(`
+school skool college university universiteit academy academie institute
+instituut technicon polytechnic seminary faculty campus kollege hochschule
+universidad universite conservatoire gymnasium
+`)
+
+/**
+ * Generic modifiers that precede an org suffix in ordinary prose rather than
+ * in a company name — "Strategic Consulting" is a heading, "Acme Consulting"
+ * is a business.
+ */
+export const GENERIC_MODIFIERS = words(`
+strategic technical mission critical core key new advanced basic formal
+personal professional legacy foundational general senior junior global
+regional central digital modern traditional practical applied
+`)
+
+const anyWordIn = (value: string, set: Set<string>) =>
+  value
+    .toLowerCase()
+    .split(/[\s/-]+/)
+    .some((word) => set.has(word))
+
+export function isJobTitlePhrase(value: string): boolean {
+  return anyWordIn(value, JOB_TITLE_WORDS)
+}
+
+export function isInstitutionPhrase(value: string): boolean {
+  return anyWordIn(value, INSTITUTION_WORDS)
+}
+
+export function startsWithGenericModifier(value: string): boolean {
+  const first = value.toLowerCase().split(/\s+/)[0] ?? ''
+  return GENERIC_MODIFIERS.has(first)
+}
 
 /** Trading-name suffixes that make a company name unambiguous. */
 export const ORG_SUFFIXES = [
@@ -183,6 +274,11 @@ morning afternoon evening today tomorrow yesterday also however therefore
 after before during since until because although unless whether what which
 who whom whose why how where all any some most many few each every no not
 attached following below above see note nb ps
+maintain provision innovate build ensure design create manage monitor
+support deliver conduct collaborate participate attend assist facilitate
+secured fostered engaged supported represented handled served advised
+executed developed implemented established coordinated achieved awarded
+progressively successfully proactively effectively additionally currently
 `)
 
 /** Infrastructure tokens that mark a string as an internal hostname. */

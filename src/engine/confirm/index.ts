@@ -36,6 +36,34 @@ export function resetLocalModel(): void {
   active = deepContextConfirmer
 }
 
+/**
+ * Load the confirmer ahead of a scan we know is coming.
+ *
+ * Attaching a document is a strong signal: reading it already takes a moment,
+ * the user has not clicked anything yet, and a document large enough to open is
+ * very likely to contain something ambiguous. Starting the load during that
+ * dead time hides most of the one-off cost, which is the only part anybody
+ * notices.
+ *
+ * Deliberately not called when text is pasted — that path is instant, and
+ * loading a model for it would put weights on the normal path for no gain.
+ *
+ * Fire and forget: this never throws and never blocks. If it fails, the scan
+ * falls back exactly as it would have.
+ */
+export function warmUp(): void {
+  const model = active
+  if (model.loaded) return
+
+  void (async () => {
+    try {
+      if (await model.isAvailable()) await model.load()
+    } catch {
+      // The scan will report the failure properly if it ever needs the model.
+    }
+  })()
+}
+
 /** How much text the confirmer gets to see around a candidate. */
 export const WINDOW_RADIUS = 160
 
@@ -151,6 +179,10 @@ export async function confirmAmbiguous(
       if (model === deepContextConfirmer) {
         return { findings, stats: { ...base, ms: performance.now() - started } }
       }
+      console.warn(
+        `[ai-safe] "${model.id}" is not provisioned — falling back to the ` +
+          `${deepContextConfirmer.id} confirmer. Run \`npm run provision:model\`.`,
+      )
       const fallback = await confirmAmbiguous(
         text,
         findings,
@@ -237,18 +269,20 @@ export async function confirmAmbiguous(
         continue
       }
 
-      // A rejection does NOT delete a finding the rules affirmatively called.
+      // A rejection removes the finding.
       //
-      // The confirmer sees a few hundred characters; the rules saw the whole
-      // document, and their evidence — a role cue, a title, a matching email
-      // address — is not visible in that window. When the two disagree here,
-      // the failure modes are not symmetric: an unnecessary redaction is an
-      // annoyance, a deleted finding is a leak. So disagreement downgrades to
-      // "still uncertain" and the finding survives, marked Possible.
-      //
-      // Rejection still does its job on recovery candidates below, where the
-      // rules had no opinion and "reject" simply means "do not promote".
-      if (verdict.decision === 'reject') rejected += 1
+      // The confirmer only answers on the categories it was trained for —
+      // people, companies, places — and on those it is a model trained on far
+      // more text than any hand-written rule encodes. Where the two disagree
+      // about a name, it is usually the rule that is guessing from shape. It
+      // is never consulted about emails, keys or identifiers, so it cannot
+      // overturn those: `confirm()` returns "unknown" for anything outside its
+      // competence, and unknown leaves the finding exactly as it was.
+      if (verdict.decision === 'reject') {
+        rejected += 1
+        continue
+      }
+
       unresolved += 1
       resolved.push({
         ...finding,
@@ -316,8 +350,44 @@ export async function confirmAmbiguous(
       }
     }
 
+    // --- one value, one answer --------------------------------------------
+    // The confirmer judges each mention on its own window, so the same word can
+    // come back as a person in one sentence and a company in the next. That
+    // reads as a bug to anyone looking at the output, and it is: whatever
+    // "Kena" is, it is the same thing in both places. Settle every mention on
+    // the reading of its most confident occurrence.
+    const strongest = new Map<string, Finding>()
+    for (const finding of resolved) {
+      const key = finding.value.toLowerCase()
+      const held = strongest.get(key)
+      if (!held || finding.confidence > held.confidence) {
+        strongest.set(key, finding)
+      }
+    }
+
+    const consistent = resolved.map((finding) => {
+      const best = strongest.get(finding.value.toLowerCase())
+      if (!best || best === finding || best.category === finding.category) {
+        return finding
+      }
+      return {
+        ...finding,
+        category: best.category,
+        confidence: Math.max(finding.confidence, best.confidence),
+        tier: best.tier,
+        signals: [
+          ...finding.signals,
+          {
+            id: 'consistent-category',
+            weight: 0,
+            note: `Matched to the same value elsewhere in this content.`,
+          },
+        ],
+      }
+    })
+
     return {
-      findings: resolved.sort((a, b) => a.start - b.start),
+      findings: consistent.sort((a, b) => a.start - b.start),
       stats: {
         ...base,
         modelAvailable: true,
@@ -332,7 +402,13 @@ export async function confirmAmbiguous(
       },
     }
   } catch (cause) {
-    // Degrade safely — the user still gets the fast-path findings.
+    // Degrade safely — the user still gets the fast-path findings. But say so
+    // loudly in the console: a confirmer that silently stops running looks
+    // exactly like one that is working, and the findings quietly get worse.
+    console.warn(
+      `[ai-safe] The "${model.id}" confirmer failed, so this scan used the fast path only.`,
+      cause,
+    )
     return {
       findings,
       stats: {

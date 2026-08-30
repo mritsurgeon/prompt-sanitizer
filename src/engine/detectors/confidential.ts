@@ -1,6 +1,32 @@
 import type { Detector } from '../types'
 import { runRules, type PatternRule } from './patterns'
 
+/** Words that follow "Project" without naming one. */
+const PROJECT_NON_NAMES = new Set([
+  'management',
+  'manager',
+  'plan',
+  'planning',
+  'team',
+  'lead',
+  'leader',
+  'delivery',
+  'office',
+  'board',
+  'charter',
+  'status',
+  'update',
+  'updates',
+  'scope',
+  'sponsor',
+  'timeline',
+  'budget',
+  'risk',
+  'work',
+  'name',
+  'code',
+])
+
 /**
  * Layer 3b — company-confidential spans.
  *
@@ -19,6 +45,9 @@ export const CONFIDENTIAL_RULES: PatternRule[] = [
       /\b(?:Project|Programme|Program|Initiative|Codename|Workstream)\s+([A-Z][A-Za-z0-9]{2,20})\b/g,
     valueGroup: 1,
     confidence: 0.8,
+    // "Project Management", "Project Plan" — the word after "Project" is only
+    // a codename when it is not itself an ordinary project noun.
+    validate: (value) => !PROJECT_NON_NAMES.has(value.toLowerCase()),
   },
   {
     name: 'Unreleased release date',

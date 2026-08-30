@@ -184,6 +184,17 @@ export const PATTERN_RULES: PatternRule[] = [
     confidence: 0.9,
   },
   {
+    // Checked before the card rule and at a higher category priority: a South
+    // African ID number is Luhn-valid and thirteen digits, so without the
+    // label it reads as a payment card.
+    name: 'Identity number with a label',
+    category: 'NATIONAL_ID',
+    pattern:
+      /\b(?:id|identity|national\s+id|passport)\s*(?:number|no|nr|#)?\s*[:.]?\s*(\d[\d\s-]{6,18}\d)/gi,
+    valueGroup: 1,
+    confidence: 0.95,
+  },
+  {
     name: 'National ID number (13 digit, checksum)',
     category: 'NATIONAL_ID',
     pattern: /\b\d{13}\b/g,

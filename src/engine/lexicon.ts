@@ -97,6 +97,17 @@ incidents problem problems risk risks control controls measure measures
 metric metrics indicator indicators score scores rating ratings ranking
 edition scheme schemes phase phases stream streams track tracks window
 windows cycle cycles round rounds wave waves batch batches run runs
+tracking planning writing automation thinking evaluations teamwork
+technologies contributions entities transformation environments generation
+negotiation techniques expertise communication administration training
+certs certificate car transport skills accomplishments dependants
+references summary competencies methodology governance compliance
+integration availability certification certifications qualification
+qualifications competency competencies diploma degree profile details
+languages interests
+news update updates summary agenda overview introduction conclusion
+background objective objectives experience education skills references slide
+slides section sections chapter appendix contents notes minutes highlights
 workload workloads agent agents wildcard wildcards trap traps class classes
 tracker termination backup backups restore restores job jobs snapshot
 snapshots repository repositories replica replicas retention appliance

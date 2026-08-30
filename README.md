@@ -259,7 +259,8 @@ behind, and that earns it.
 | --- | --- | --- |
 | Held-out set 2, F1 | 95.2% | **100%** |
 | Held-out set 1, F1 | 95.7% | 95.2%¹ |
-| Cold start | — | ~950 ms |
+| Cold start (Node) | — | ~1.0 s, once per session |
+| Escalating scan, warm | — | ~100–140 ms |
 | Per candidate | — | ~8 ms |
 | Entry bundle | 156 KB gzip | 158 KB gzip² |
 
@@ -271,6 +272,11 @@ scoring asks "is this a person?", so it counts as a miss; no data leaked.
 ² All model code is lazily imported, so the entry chunk grows by 2 KB.
 `transformers` (192 KB gzip) and the ONNX runtime load only when the model
 does.
+
+In the browser the weights are parsed by WebAssembly rather than native code,
+so the one-off startup is several seconds rather than one. It happens on the
+first scan that escalates and never again in that session — the scan overlay
+says so while it waits rather than showing a finished-looking checklist.
 
 Run it yourself: `npm run check:heldout -- bench/heldout-ambiguity-2.json --gliner`
 

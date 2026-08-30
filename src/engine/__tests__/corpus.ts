@@ -237,6 +237,82 @@ sarah.mitchell@example.com`,
 ]
 
 // ---------------------------------------------------------------------------
+// CVs and profiles. Dense with job titles, qualifications and institutions
+// sitting exactly where a name would sit — and with the one name that matters
+// alone on the first line.
+// ---------------------------------------------------------------------------
+export const PROFILE_DOCUMENTS: Case[] = [
+  {
+    // An ASCII-only token pattern splits "Mornè" into "Morn" + "è" and loses
+    // the name entirely. The names that breaks are disproportionately the
+    // non-English ones.
+    name: 'Accented name on the opening line',
+    text: `Mornè Jonker
+Senior Solutions Architect
+Location: Pretoria, South Africa`,
+    expect: [
+      { value: 'Mornè Jonker', category: 'PERSON' },
+      { value: 'Pretoria', category: 'LOCATION' },
+    ],
+    // A country identifies nobody, so masking it costs readability and buys no
+    // privacy. It is listed in the gazetteer only so it is not mistaken for an
+    // unrecognised name.
+    reject: ['Senior Solutions Architect', 'South Africa'],
+  },
+  {
+    // Both names carry ordinary supporting context, so this isolates the
+    // tokenising question — can an accented name be seen at all — rather than
+    // re-testing context scoring, which the cases above already cover.
+    name: 'Other accented and non-English names',
+    text: 'Please contact José Müller. Renée Dubois will follow up afterwards.',
+    expect: [
+      { value: 'José Müller', category: 'PERSON' },
+      { value: 'Renée Dubois', category: 'PERSON' },
+    ],
+  },
+  {
+    name: 'Job titles are not people',
+    text: `Implementation Specialist / Team Lead
+Mission Critical Engineer / Technical Consultant
+HPE Storage Ambassador for South Africa`,
+    reject: [
+      'Implementation Specialist',
+      'Technical Consultant',
+      'Storage Ambassador',
+      'Team Lead',
+    ],
+  },
+  {
+    name: 'Institutions and qualifications are not people',
+    text: `S3 Level (Electrical Engineering/Electronics) – Pretoria Technicon
+Transvaal Senior Certificate – Hoër Tegniese Skool Springs
+Clariion Host Integration, Compaq ASE Professional, Brocade BCFP.`,
+    reject: [
+      'Pretoria Technicon',
+      'Hoër Tegniese Skool',
+      'Electrical Engineering',
+      'Clariion Host Integration',
+      'Compaq ASE Professional',
+    ],
+  },
+  {
+    name: 'A generic modifier does not make a company',
+    text: 'Strategic Consulting: TCO/ROI calculation using Allinean tools.',
+    reject: ['Strategic Consulting'],
+  },
+  {
+    name: 'Real employers are still companies',
+    text: 'Hewlett Packard Enterprise (HPE) | October 2023 – Present. I work for Veeam Software.',
+    expect: [{ value: 'Veeam Software', category: 'ORGANISATION' }],
+  },
+  {
+    name: 'Contractions are not names',
+    text: "Before our starters arrive, I'd like to invite you in. I'm sure I'll be there.",
+    reject: ["I'd", "I'm", "I'll"],
+  },
+]
+
+// ---------------------------------------------------------------------------
 // Places.
 // ---------------------------------------------------------------------------
 export const PLACES: Case[] = [
@@ -321,6 +397,7 @@ export const ALL_CASES: { group: string; cases: Case[] }[] = [
   { group: 'organisations', cases: ORGANISATIONS },
   { group: 'technical noise', cases: TECHNICAL_NOISE },
   { group: 'structured documents', cases: STRUCTURED_DOCUMENTS },
+  { group: 'profile documents', cases: PROFILE_DOCUMENTS },
   { group: 'places', cases: PLACES },
   { group: 'true positives', cases: TRUE_POSITIVES },
 ]

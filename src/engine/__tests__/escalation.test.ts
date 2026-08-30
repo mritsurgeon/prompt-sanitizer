@@ -125,17 +125,28 @@ describe('the gate', () => {
     expect(person?.signals.some((s) => s.note.includes('spy verdict'))).toBe(true)
   })
 
-  it('does not delete a finding the rules called, even when rejected', async () => {
-    // The confirmer sees a few hundred characters; the rules saw the whole
-    // document. Disagreement is not grounds for deleting a finding — an
-    // unnecessary redaction is an annoyance, a deleted finding is a leak.
+  it('deletes a finding the confirmer rejects', async () => {
+    // On people, companies and places the confirmer is a model trained on far
+    // more text than any hand-written rule encodes. When the two disagree
+    // about a name it is usually the rule guessing from shape, so the
+    // confirmer wins.
     registerLocalModel(spyModel('reject'))
     const result = await scanWithConfirmation(AMBIGUOUS)
 
-    const person = result.findings.find((f) => f.category === 'PERSON')
-    expect(person).toBeDefined()
-    expect(person?.tier).toBe('medium')
+    expect(result.findings.find((f) => f.category === 'PERSON')).toBeUndefined()
     expect(result.escalation.rejected).toBe(1)
+  })
+
+  it('cannot overturn a category it was never asked about', async () => {
+    // The model is only consulted on people, companies and places. A rejecting
+    // confirmer must not be able to delete an email or a support case.
+    registerLocalModel(spyModel('reject'))
+    const result = await scanWithConfirmation(UNAMBIGUOUS)
+
+    const categories = result.findings.map((f) => f.category)
+    expect(categories).toContain('EMAIL')
+    expect(categories).toContain('PHONE')
+    expect(categories).toContain('CASE_ID')
   })
 
   it('lets the confirmer correct the category rather than the verdict', async () => {

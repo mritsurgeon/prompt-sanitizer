@@ -29,9 +29,16 @@ export function escapeXml(value: string): string {
 
 /** The visible text of one <w:p>, with tabs and line breaks preserved. */
 export function paragraphText(paragraph: string): string {
+  // Word almost always writes these with attributes — `<w:br w:type="text
+  // Wrapping"/>` rather than a bare `<w:br/>`. Missing them silently welds
+  // lines together ("GermistonMobile:", "6093Email:"), and a phone number with
+  // a letter jammed against it stops looking like a phone number at all.
+  // Rewritten as text nodes, not raw characters: only the contents of <w:t>
+  // are harvested below, so a bare "\n" dropped between elements would be
+  // thrown away and the lines would still weld together.
   const normalised = paragraph
-    .replace(/<w:tab\s*\/>/g, '\t')
-    .replace(/<w:br\s*\/>/g, '\n')
+    .replace(/<w:tab(?:\s[^>]*)?\/>/g, '<w:t>\t</w:t>')
+    .replace(/<w:(?:br|cr)(?:\s[^>]*)?\/>/g, '<w:t>\n</w:t>')
 
   return [...normalised.matchAll(TEXT_NODE_RE)]
     .map((node) => unescapeXml(node[2]))

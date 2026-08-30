@@ -12,6 +12,7 @@ import { scan, scanWithConfirmation } from '@/engine/detect'
 import { improvePrompt } from '@/engine/improve'
 import { computeRisk } from '@/engine/risk'
 import { recordAssessment } from '@/engine/feedback'
+import { warmUp } from '@/engine/confirm'
 import { sanitize } from '@/engine/sanitize'
 import type { DocumentClassification } from '@/engine/classify'
 import type {
@@ -80,6 +81,10 @@ export default function App() {
       const extracted = await extractFile(picked, setReading)
       setFile(extracted)
       setText(extracted.text)
+      // A scan is coming. Start the closer check loading now, while the user
+      // is still looking at the file, so the wait lands in dead time instead
+      // of after they click.
+      warmUp()
       if (!extracted.text.trim()) {
         setError('We could not find any readable text in that file.')
       }
@@ -99,6 +104,16 @@ export default function App() {
     setStage('scanning')
 
     scanRef.current = (async () => {
+      // Let the browser paint the overlay before we occupy the main thread.
+      //
+      // Without this, `setStage('scanning')` only queues a render and the very
+      // next statement starts a synchronous scan — so the click appears to do
+      // nothing until all the work has finished, and people click again. Two
+      // frames is the reliable way to know a paint actually happened.
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      )
+
       const result = await scanWithConfirmation(text, {
         meta: {
           filename: file?.name,
@@ -117,11 +132,9 @@ export default function App() {
     })()
   }, [text, file])
 
-  /** Called when the intro animation finishes; waits for the scan if needed. */
-  const handleScanShown = useCallback(async () => {
-    await scanRef.current
-    setStage('review')
-  }, [])
+  /** The overlay waits on this, then completes its sequence before closing. */
+  const awaitScan = useCallback(() => scanRef.current ?? Promise.resolve(), [])
+  const showResults = useCallback(() => setStage('review'), [])
 
   const handleToggleValue = useCallback((ids: string[], enabled: boolean) => {
     const set = new Set(ids)
@@ -207,7 +220,9 @@ export default function App() {
             />
           )}
 
-          {stage === 'scanning' && <ScanOverlay onDone={handleScanShown} />}
+          {stage === 'scanning' && (
+            <ScanOverlay work={awaitScan} onDone={showResults} />
+          )}
 
           {stage === 'review' && document && classification && (
             <ReviewStage

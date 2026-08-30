@@ -3,11 +3,15 @@ import {
   ORG_SUFFIXES,
   hasInfraToken,
   isFirstName,
+  isCountry,
+  isInstitutionPhrase,
+  isJobTitlePhrase,
   isOrgSuffixWord,
   isPlace,
   isSentenceStarter,
   isSurname,
   isTechAcronym,
+  startsWithGenericModifier,
 } from '../gazetteer'
 import { ORG_OWNERSHIP_RE } from '../lexicon'
 
@@ -75,8 +79,14 @@ const ORG_CUES = new Set([
 const STREET_RE =
   /\b\d{1,5}[A-Za-z]?\s+(?:[A-Z][A-Za-z'-]+\s+){0,3}(?:Street|St\.?|Road|Rd\.?|Avenue|Ave\.?|Drive|Dr\.?|Lane|Ln\.?|Boulevard|Blvd\.?|Way|Close|Crescent|Court|Ct\.?|Place|Terrace|Park|Square)\b(?:,?\s*(?:Unit|Suite|Apt|Flat|Block)\s*\w+)?/g
 
-/** Capitalised words, including O'Brien and Jean-Luc. */
-const CAP_TOKEN_RE = /\b[A-Z][A-Za-z'’-]*\b/g
+/**
+ * Capitalised words, including O'Brien, Jean-Luc and Mornè.
+ *
+ * Unicode-aware on purpose. An `[A-Z][A-Za-z]*` pattern splits "Mornè" into
+ * "Morn" + "è", which breaks the name in half and loses it entirely — and the
+ * names it loses are disproportionately the non-English ones.
+ */
+const CAP_TOKEN_RE = /\p{Lu}[\p{L}'’-]*/gu
 
 // Base scores. These reflect gazetteer support only — context does the rest.
 const BASE = {
@@ -85,8 +95,15 @@ const BASE = {
   givenAndSurname: 0.96,
   givenAndCapitalised: 0.85,
   givenAlone: 0.7,
-  /** Two or more capitalised words no gazetteer recognises. */
-  unresolvedPhrase: 0.55,
+  /**
+   * Two or more capitalised words no gazetteer recognises.
+   *
+   * Deliberately below the medium threshold: on shape alone this is a guess,
+   * and in a document full of Title Case headings and skills the guess is
+   * usually wrong. It needs either real context (a cue, a person verb, a
+   * heading position) or the confirmer to become a finding.
+   */
+  unresolvedPhrase: 0.45,
   /** A single capitalised word no gazetteer recognises. */
   unresolvedToken: 0.3,
   orgSuffix: 0.92,
@@ -100,15 +117,18 @@ const BASE = {
 
 function tokenize(text: string): Token[] {
   const tokens: Token[] = []
-  const re = new RegExp(CAP_TOKEN_RE.source, 'g')
+  const re = new RegExp(CAP_TOKEN_RE.source, 'gu')
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
     let value = m[0]
     let end = m.index + value.length
-    // "Smith's" -> "Smith"
-    if (/['’]s$/.test(value)) {
-      value = value.slice(0, -2)
-      end -= 2
+    // Strip contractions, not just possessives: "Smith's" -> "Smith", and
+    // "I'd" -> "I", which is then too short to be a candidate at all. Without
+    // this, every "I'd", "I'm" and "I'll" in a document looks like a name.
+    const contraction = value.match(/['’](?:s|d|m|re|ve|ll|t)$/i)
+    if (contraction) {
+      value = value.slice(0, -contraction[0].length)
+      end -= contraction[0].length
     }
     if (value.length < 2) continue
     tokens.push({ text: value, start: m.index, end })
@@ -197,7 +217,11 @@ export function runEntityRules(text: string): Candidate[] {
     const single = group.length === 1
 
     // ---- company: "ACME Holdings", "Northwind Traders Ltd" -------------
-    if (group.length >= 2 && isOrgSuffixWord(last.text)) {
+    if (
+      group.length >= 2 &&
+      isOrgSuffixWord(last.text) &&
+      !startsWithGenericModifier(value)
+    ) {
       out.push({
         category: 'ORGANISATION',
         value,
@@ -247,7 +271,11 @@ export function runEntityRules(text: string): Candidate[] {
     // ---- company: "customer ACME" / "client Northwind" -----------------
     if (ORG_CUES.has(cue)) {
       const looksPersonal = isFirstName(first.text)
-      if (!looksPersonal && !isTechAcronym(value)) {
+      // "Customer Relationship Management" is a skill, not a company that
+      // happens to follow the word "customer".
+      const looksLikeRole =
+        isJobTitlePhrase(value) || isInstitutionPhrase(value)
+      if (!looksPersonal && !looksLikeRole && !isTechAcronym(value)) {
         out.push({
           category: 'ORGANISATION',
           value,
@@ -262,8 +290,14 @@ export function runEntityRules(text: string): Candidate[] {
       }
     }
 
+    // ---- countries are not sensitive ----------------------------------
+    // Mentioning a country identifies nobody. Ruled out explicitly so it is
+    // not mistaken for an unrecognised name further down.
+    const joinedRaw = group.map((t) => t.text).join('')
+    if (isCountry(joinedRaw) || (single && isCountry(first.text))) continue
+
     // ---- place: "Cape Town", "Johannesburg" ---------------------------
-    const joined = group.map((t) => t.text).join('')
+    const joined = joinedRaw
     if (isPlace(joined) || (single && isPlace(first.text))) {
       out.push({
         category: 'LOCATION',
@@ -341,6 +375,27 @@ export function runEntityRules(text: string): Candidate[] {
       base = BASE.unresolvedToken
       rule = 'Capitalised word that may be a name'
       unresolved = true
+    }
+
+    // A role or a place of study is not a person. These are the commonest
+    // mislabels in a CV, and no amount of surrounding context fixes them
+    // because the phrase really does sit where a name would sit.
+    if (unresolved && (isJobTitlePhrase(nameValue) || isInstitutionPhrase(nameValue))) {
+      continue
+    }
+
+    // "Cisco CCNP", "Brocade BCFP" — a phrase ending in a short all-caps
+    // acronym is a certification or a product code. A person's surname is not
+    // an acronym, so this does not catch "IAN ENGELBRECHT", where the long
+    // trailing token is plainly a name.
+    const acronymish = (t: string) => /^[A-Z0-9]{2,6}$/.test(t)
+    if (
+      unresolved &&
+      names.length >= 2 &&
+      acronymish(tail.text) &&
+      !acronymish(head.text)
+    ) {
+      continue
     }
 
     out.push({

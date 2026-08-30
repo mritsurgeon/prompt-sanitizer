@@ -44,7 +44,9 @@ const list: Category[] = [
     token: '[ID_NUMBER]',
     pseudoPrefix: 'IdNumber',
     why: 'Government ID numbers are highly sensitive personal data and are protected by law in most countries.',
-    priority: 93,
+    // Above payment cards: a 13-digit national ID is Luhn-valid, so when both
+    // rules match the labelled identity number is the better reading.
+    priority: 96,
   },
   {
     id: 'CREDIT_CARD',

@@ -1,3 +1,9 @@
+import {
+  isInstitutionPhrase,
+  isJobTitlePhrase,
+  isSentenceStarter,
+  isTechAcronym,
+} from '../gazetteer'
 import type { CategoryId } from '../types'
 import type {
   ConfirmationRequest,
@@ -26,20 +32,20 @@ import type {
  * the app's own origin. Nothing is fetched from a third party at scan time.
  */
 
-/** The only categories this model has an opinion about. */
-const LABELS = ['person', 'organization', 'location'] as const
-
-const LABEL_TO_CATEGORY: Record<string, CategoryId> = {
+/**
+ * The entity labels we ask for, and how they map back to our categories.
+ *
+ * GLiNER takes its labels as free text at inference time, so a PII-tuned
+ * checkpoint answers better to "company" than to "organization". Configurable
+ * per model rather than hard-coded.
+ */
+const DEFAULT_LABELS: Record<string, CategoryId> = {
   person: 'PERSON',
   organization: 'ORGANISATION',
   location: 'LOCATION',
 }
 
-const ADJUDICATED = new Set<CategoryId>([
-  'PERSON',
-  'ORGANISATION',
-  'LOCATION',
-])
+const ADJUDICATED = new Set<CategoryId>(['PERSON', 'ORGANISATION', 'LOCATION'])
 
 export interface GlinerOptions {
   /**
@@ -54,6 +60,8 @@ export interface GlinerOptions {
   /** Minimum span score to believe. */
   threshold?: number
   maxWidth?: number
+  /** Entity label -> category. Overridden for PII-tuned checkpoints. */
+  labels?: Record<string, CategoryId>
 }
 
 interface GlinerSpan {
@@ -69,15 +77,13 @@ const isNode =
   process.versions?.node != null &&
   typeof window === 'undefined'
 
-const DEFAULTS: Required<Omit<GlinerOptions, 'basePath' | 'modelFile'>> & {
-  basePath: string
-  modelFile: string
-} = {
+const DEFAULTS: Required<GlinerOptions> = {
   basePath: '/models/',
   modelName: 'gliner-small',
   modelFile: '/models/gliner-small/onnx/model.onnx',
   threshold: 0.45,
   maxWidth: 12,
+  labels: DEFAULT_LABELS,
 }
 
 /**
@@ -122,12 +128,18 @@ export function createGlinerConfirmer(
       const started = performance.now()
 
       // The browser build pulls in onnxruntime-web; the node build uses
-      // onnxruntime-node. Importing the wrong one fails loudly, so pick here —
-      // and keep the Node specifier opaque to the bundler, or it ships
+      // onnxruntime-node.
+      //
+      // These two imports must be written differently on purpose. The browser
+      // one is a literal so the bundler rewrites it to the built chunk — hide
+      // it behind a variable and the output keeps a bare "gliner" specifier,
+      // which no browser can resolve at runtime. The Node one is built from a
+      // variable precisely so the bundler leaves it alone and does not ship
       // onnxruntime-node to the browser.
-      const entry = isNode ? 'gliner/node'.slice(0) : 'gliner'
-      const { Gliner } = (await import(/* @vite-ignore */ entry)) as
-        typeof import('gliner')
+      const nodeEntry = 'gliner' + '/node'
+      const { Gliner } = isNode
+        ? ((await import(/* @vite-ignore */ nodeEntry)) as typeof import('gliner'))
+        : await import('gliner')
 
       // transformers.js resolves the tokenizer relative to this root, and must
       // be told to read locally rather than reach for HuggingFace.
@@ -189,7 +201,7 @@ export function createGlinerConfirmer(
     const started = performance.now()
     const results = await model.inference({
       texts: windows,
-      entities: [...LABELS],
+      entities: Object.keys(config.labels),
       threshold: config.threshold,
       flatNer: true,
     })
@@ -231,7 +243,7 @@ export function createGlinerConfirmer(
       if (best) {
         claim(request.window, bestIndex)
         const span = best as GlinerSpan
-        const asCategory = LABEL_TO_CATEGORY[span.label]
+        const asCategory = config.labels[span.label]
         const agrees = asCategory === request.category
         return {
           id: request.id,
@@ -269,15 +281,28 @@ export function createGlinerConfirmer(
 
       spansFor(request.window).forEach((span, index) => {
         if (used.has(index)) return
-        const asCategory = LABEL_TO_CATEGORY[span.label]
+        const asCategory = config.labels[span.label]
         if (!asCategory) return
         if (span.score < config.threshold) return
         // Discovery is unprompted, so hold it to a stricter standard than an
         // answer to a question we asked. A named entity in English text is
         // capitalised; a lower-case span is the model latching onto a common
         // noun ("procurement", "the vendor") rather than a name.
-        if (!/^[A-Z]/.test(span.spanText.trim())) return
-        if (span.spanText.trim().length < 2) return
+        const text = span.spanText.trim()
+        if (!/^[A-Z]/.test(text)) return
+        if (text.length < 2) return
+        // Discovery bypasses the rules entirely, so it has to re-apply the
+        // exclusions they would have made: "PM", "SQL", "VBR" are vocabulary,
+        // not names, and "The"/"Delivered" are just capitalised words.
+        if (text.split(/\s+/).every((word) => isTechAcronym(word))) return
+        if (text.split(/\s+/).every((word) => isSentenceStarter(word))) return
+        // A role or a place of study sits exactly where a name sits, so a
+        // model reads it as one. The rules already refuse these; discovery
+        // bypasses the rules, so it has to refuse them too.
+        if (isJobTitlePhrase(text) || isInstitutionPhrase(text)) return
+        // People do not have digits in their names. "MCITP 70-686" and
+        // "HP2-037" are product and certification codes.
+        if (asCategory === 'PERSON' && /\d/.test(text)) return
         discovered.push({
           value: span.spanText,
           category: asCategory,
