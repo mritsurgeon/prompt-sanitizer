@@ -18,7 +18,11 @@
     "check:heldout": "tsx scripts/heldout-score.ts",
     "check:perf": "tsx scripts/perf.ts",
     "check:classify": "tsx scripts/classify-score.ts",
-    "provision:model": "node scripts/provision-model.mjs"
+    "provision:model": "node scripts/provision-model.mjs",
+    "ext:build": "node extension/build.mjs",
+    "ext:dev": "node extension/build.mjs --dev",
+    "ext:bench": "node scripts/serve-bench.mjs",
+    "check:ext": "tsx scripts/ext-perf.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
@@ -40,10 +44,12 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@types/chrome": "^0.2.7",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.1.0",
+    "happy-dom": "^20.12.0",
     "onnxruntime-node": "1.19.2",
     "oxlint": "^1.79.0",
     "tsx": "^4.23.12",

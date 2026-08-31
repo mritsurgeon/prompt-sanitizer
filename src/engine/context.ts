@@ -76,17 +76,21 @@ export function buildIndex(
   sensitivity?: DocumentSensitivity,
 ): DocumentIndex {
   // Blank out identifiers before looking for lowercase prose.
-  let prose = text
+  //
+  // One pass over a character array, not a re-slice of the whole string per
+  // candidate. The obvious version rebuilds the entire document once for every
+  // identifier in it, which is quadratic and was by far the largest cost in a
+  // large scan — a 370 kb case export spent 555 ms here alone. `split('')`
+  // splits by UTF-16 code unit, so the indices stay the ones the detectors
+  // reported and a surrogate pair survives the round trip.
+  const chars = text.split('')
   for (const candidate of candidates) {
     if (!NON_PROSE.has(candidate.category)) continue
-    prose =
-      prose.slice(0, candidate.start) +
-      ' '.repeat(candidate.end - candidate.start) +
-      prose.slice(candidate.end)
+    for (let i = candidate.start; i < candidate.end; i++) chars[i] = ' '
   }
 
   const lowercaseWords = new Set<string>()
-  for (const match of prose.matchAll(LOWERCASE_WORD_RE)) {
+  for (const match of chars.join('').matchAll(LOWERCASE_WORD_RE)) {
     lowercaseWords.add(match[0])
   }
 
@@ -130,9 +134,12 @@ function precedingWord(text: string, index: number): string {
  * Workloads" as a person because the next row happens to start "Planned".
  */
 function restOfLine(text: string, index: number): string {
-  const rest = text.slice(index)
-  const newline = rest.search(/[\r\n]/)
-  return newline === -1 ? rest : rest.slice(0, newline)
+  // Scanned to the line end rather than sliced to the document end. This is
+  // called once per candidate, so copying the whole remainder each time makes
+  // the pass quadratic in document length.
+  let end = index
+  while (end < text.length && text[end] !== '\n' && text[end] !== '\r') end += 1
+  return text.slice(index, end)
 }
 
 function followingWord(line: string): string {
@@ -167,8 +174,18 @@ function isWholeLine(text: string, start: number, end: number): boolean {
 }
 
 function startsSentence(text: string, index: number): boolean {
-  const before = text.slice(0, index).trimEnd()
-  return before.length === 0 || /[.!?:;]$/.test(before) || /\n\s*$/.test(text.slice(0, index))
+  // Walks back over the run of whitespace before `index` instead of slicing
+  // and trimming the entire prefix — same three conditions as before (nothing
+  // precedes it, a sentence ended, or a line did), but bounded by the length
+  // of that whitespace run rather than by the size of the document.
+  let cursor = index
+  let sawNewline = false
+  while (cursor > 0 && /\s/.test(text[cursor - 1])) {
+    if (text[cursor - 1] === '\n') sawNewline = true
+    cursor -= 1
+  }
+  if (cursor === 0 || sawNewline) return true
+  return /[.!?:;]/.test(text[cursor - 1])
 }
 
 const signal = (id: string, weight: number, note: string): Signal => ({

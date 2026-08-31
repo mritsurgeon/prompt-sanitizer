@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Safe — extension test bench</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; min-height: 100vh; background: #0f1116; color: #eef1f6;
+    font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  main { width: min(720px, calc(100vw - 32px)); padding: 40px 0 200px; }
+  h1 { font-size: 20px; font-weight: 600; letter-spacing: -.02em; margin: 0 0 4px; }
+  .sub { color: #8d97a6; font-size: 13px; margin-bottom: 28px; }
+  h2 { font-size: 13px; font-weight: 600; margin: 28px 0 8px; }
+  .hint { color: #6d7787; font-size: 12px; margin: 0 0 10px; line-height: 1.5; }
+  .samples { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .samples button {
+    font: inherit; font-size: 12px; border-radius: 999px; padding: 6px 12px;
+    border: 1px solid #2b323d; background: #1e232c; color: #eef1f6; cursor: pointer;
+  }
+  .samples button:hover { background: #252b35; }
+  .composer {
+    border: 1px solid #2b323d; background: #171b22; border-radius: 14px;
+    padding: 12px; display: flex; gap: 10px; align-items: flex-end;
+  }
+  textarea, [contenteditable] {
+    flex: 1; min-height: 76px; max-height: 240px; overflow-y: auto;
+    background: transparent; border: 0; outline: 0; resize: none;
+    color: #eef1f6; font: inherit; font-size: 14px; line-height: 1.5;
+  }
+  [contenteditable]:empty::before { content: attr(data-placeholder); color: #6d7787; }
+  button[type="submit"], .send {
+    font: inherit; font-size: 13px; font-weight: 600; border: 0; cursor: pointer;
+    border-radius: 999px; padding: 8px 16px; background: #3ad57f; color: #08130c;
+  }
+  #log {
+    margin-top: 24px; border-top: 1px solid #232933; padding-top: 12px;
+    font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #8d97a6;
+    white-space: pre-wrap; min-height: 40px;
+  }
+  code { background: #1e232c; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Extension test bench</h1>
+  <p class="sub">
+    A fake AI composer. Load the extension, then paste into either box below —
+    the same code path runs here as on ChatGPT.
+  </p>
+
+  <div class="samples">
+    <button data-fill="safe">Safe text</button>
+    <button data-fill="pii">Customer email (warn)</button>
+    <button data-fill="secret">API key (block)</button>
+    <button data-fill="roadmap">Internal roadmap (warn)</button>
+    <button data-fill="ambiguous">Ambiguous (closer look)</button>
+    <button data-fill="tricky">Tricky, should stay quiet</button>
+  </div>
+  <p class="hint">
+    Buttons copy the sample to your clipboard, then paste it in.
+    Press <code>Enter</code> to submit, <code>Shift+Enter</code> for a newline.
+    <br>
+    Nothing found means nothing happens — no banner, no delay. That silence is
+    the normal case and it is the thing to check first.
+  </p>
+
+  <h2>1 — textarea composer (like Copilot)</h2>
+  <form class="composer" id="form-a">
+    <textarea id="ta" placeholder="Paste here, then press Enter…"></textarea>
+    <button type="submit">Send</button>
+  </form>
+
+  <h2>2 — contenteditable composer (like ChatGPT, Claude, Gemini)</h2>
+  <div class="composer">
+    <div id="ce" contenteditable="true" data-placeholder="Paste here, then press Enter…"></div>
+    <button class="send" aria-label="Send message">Send</button>
+  </div>
+
+  <div id="log">Nothing submitted yet.</div>
+</main>
+
+<script>
+  const SAMPLES = {
+    safe: 'Can you help me write a polite reply declining a meeting invitation next week?',
+    pii: 'Help me rewrite this: Sarah Mitchell from Northwind contacted us at sarah.mitchell@example.com about case CASE-49281. Her direct line is +27 82 555 0198.',
+    secret: 'Here is our API key sk-live-9d8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b and the password is Summer2024! — show me how to call the endpoint.',
+    roadmap: 'Summarise our Q4 roadmap, internal use only. Project Phoenix launches in October 2027. Pricing remains under review with the list price and gross margin still being modelled.',
+    // Names no word list contains, in sentences that only context can settle.
+    // This is the case stage two exists for — watch the banner update itself.
+    ambiguous: 'Adeyemi confirmed the migration window, and Chase from procurement signed off. Rose called about the renewal. Can you draft a reply?',
+    tricky: 'Can you explain Christian values in modern society? Also, will the May release slip, and should I mark the invoice as paid? We run Kubernetes and Docker in production.',
+  }
+
+  for (const button of document.querySelectorAll('[data-fill]')) {
+    button.addEventListener('click', async () => {
+      const text = SAMPLES[button.dataset.fill]
+      try {
+        await navigator.clipboard.writeText(text)
+        log(`Copied "${button.textContent}" to the clipboard. Now paste it into a composer.`)
+      } catch {
+        log('Clipboard blocked. Select and copy this instead:\n\n' + text)
+      }
+    })
+  }
+
+  // Stand in for the AI service: report what would have been sent.
+  function submitted(where, text) {
+    log(`SENT from ${where} (${text.length} chars):\n\n${text}`)
+  }
+
+  function log(message) {
+    document.getElementById('log').textContent = message
+  }
+
+  document.getElementById('form-a').addEventListener('submit', (e) => {
+    e.preventDefault()
+    submitted('textarea', document.getElementById('ta').value)
+  })
+
+  document.getElementById('ta').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      submitted('textarea', e.target.value)
+    }
+  })
+
+  const ce = document.getElementById('ce')
+  ce.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      submitted('contenteditable', ce.innerText)
+    }
+  })
+  document.querySelector('.send').addEventListener('click', () => {
+    submitted('contenteditable', ce.innerText)
+  })
+</script>
+</body>
+</html>

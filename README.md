@@ -99,6 +99,29 @@ number, and `\\BKP-REPO-01\archive` is one network path rather than two
 hostnames. Resolution uses a claimed-character bitmap, so it stays linear in
 total match length rather than quadratic in candidate count.
 
+### The whole pipeline is linear in document length
+
+Worth stating explicitly, because it stopped being true twice and both times
+by accident. The pattern is easy to write and hard to see: a per-candidate
+helper that slices the *whole* document is O(1) to read and O(n²) to run, since
+candidate count grows with length.
+
+| | Was | Now |
+| --- | --- | --- |
+| Masking identifiers before the prose index | rebuilt the entire string per identifier | one pass over a character array |
+| `restOfLine` | sliced to the end of the document | scans to the line end |
+| `startsSentence` | sliced and trimmed the entire prefix | walks back over the preceding whitespace |
+
+Per-character cost is now flat — 780–930 ns/char from 46 kb to 738 kb, where it
+used to climb from 1 783 to 4 051. On the 291 KB benchmark that is 382 ms →
+222 ms, and the gap widens with size.
+
+`performance.test.ts` gates this by quadrupling the input and asserting the
+time does not rise by much more than 4x. It is a scaling assertion rather than
+a millisecond ceiling on purpose: a stopwatch measures the machine as much as
+the code, and a gate that fails when an antivirus scan happens to be running is
+a gate people learn to ignore. The pre-fix code measures 7.8x against it.
+
 ## Confidence: how false positives are reduced
 
 The old engine was binary — a gazetteer hit was a finding. That produced two
@@ -486,6 +509,212 @@ document in memory:
 
 `npm run check:files` proves the round trip: it re-opens each cleaned file and
 re-scans it, and reports any value that leaked.
+
+## Browser protection
+
+A thin WebExtension that checks a prompt on your device before it reaches
+ChatGPT, Claude, Gemini or Copilot.
+
+```bash
+npm run ext:build      # builds extension/dist (~120 KB)
+```
+
+- **Chrome / Edge** — `chrome://extensions` → Developer mode → Load unpacked →
+  pick `extension/dist`
+- **Firefox** — rename `manifest.firefox.json` to `manifest.json`, then
+  `about:debugging` → Load Temporary Add-on
+
+### Testing it
+
+There is a local test bench, so the extension can be exercised without an
+account on anything:
+
+```bash
+npm run ext:dev        # build, and also arm the extension on localhost:4180
+npm run ext:bench      # serve the bench
+```
+
+Load `extension/dist` unpacked, open <http://localhost:4180>, and paste one of
+the sample prompts into either composer. The page is a fake AI composer — one
+`textarea`, one `contenteditable`, a send button each — so the extension runs
+exactly the code path it runs on a real site, and the page prints what *would*
+have been sent.
+
+| Sample | On paste | On Enter |
+| --- | --- | --- |
+| Safe text | nothing | sends |
+| Customer email | warning | held, warn, mask offered |
+| API key | warning | held, **blocked**, no send-anyway |
+| Internal roadmap | warning | held, warn |
+| Ambiguous | warning, then the closer look updates it | held, warn |
+| Tricky | nothing — these are the traps | sends |
+
+Two rows matter most. **Tricky** is the false-positive check: `Christian
+values`, `the May release`, `mark the invoice`, `Docker` and `Kubernetes` all
+look like names or secrets to a naive matcher, and none of them should raise
+anything. **Ambiguous** is the two-stage check — the banner should appear on
+the rules verdict and then visibly revise itself a moment later.
+
+Also worth watching: paste something clean and confirm that *nothing at all*
+happens. That silence is the feature.
+
+`npm run ext:dev` is a dev build only: it adds `localhost:4180` to the
+manifest, which a shipped build must never carry. Use `npm run ext:build` for
+anything you actually install.
+
+The bench cannot tell you whether the adapters still match the current ChatGPT
+or Gemini DOM — only those sites can. It tells you the rest of the machinery
+works, which is most of what breaks.
+
+### Two stages, and the second one is earned
+
+```
+paste / send
+     │
+     ▼
+  ① rules ──── nothing found ───▶ goes straight through, no banner, no delay
+     │                            (the common case — it has to be invisible)
+     │ something found
+     ▼
+  banner appears immediately, already actionable
+     │
+     ├── ② closer look starts behind it, updates the banner in place
+     │
+     └── Mask it · Use fake names · Edit in AI Safe · Send anyway · Cancel
+```
+
+Stage one is synchronous and sub-millisecond, so on clean text the held
+keystroke is imperceptible and the send just happens. Stage two only ever runs
+on a prompt that has *already* been flagged, and only on the findings the rules
+could not settle — never the whole prompt, and never on clean text.
+
+Crucially the user never waits for stage two. The banner is complete and
+actionable the moment it appears; the closer look folds into it when it lands,
+and usually *withdraws* a finding rather than adding one:
+
+> ✓ Closer look ruled out 2 false alarms
+
+If they clean, dismiss or send before it returns, the late answer is discarded.
+
+### Why GLiNER is not the thing running in the extension
+
+It cannot be. Three independent blockers, each sufficient on its own:
+
+| | |
+| --- | --- |
+| MV3 forbids `eval` | `onnxruntime-web` uses direct `eval`. No manifest key permits it. |
+| The runtime is 44 MB | ONNX runtime JavaScript, before any weights exist. |
+| The weights are 183 MB | Cannot ship in an extension package, and must not be fetched from a third party at scan time. |
+
+An offscreen document was built and measured before this was settled — MV3's
+own primitive for keeping something resident past a service worker's idle
+timeout — and it turned a 132 KB extension into a 44 MB one that would still
+have hit the CSP wall at runtime.
+
+So the extension's stage two is the engine's **deterministic deep-context
+confirmer**: it re-reads every occurrence of a value in its window and votes
+across them, reads the whole clause rather than the adjacent word, and checks
+pronoun and job-role agreement. Zero bytes, cannot fail to load, and measurably
+better than the rules alone.
+
+The neural tier is one click away instead. **Edit in AI Safe** hands the prompt
+to the web app — an ordinary page, with an ordinary CSP, where GLiNER already
+runs at 100% F1 on the held-out set. The prompt travels through the extension's
+session storage, never the URL, so it never reaches history or the omnibox.
+
+That is the honest split: what the browser can do, it does inline; what it
+cannot, it hands over rather than pretending.
+
+### There is no second engine, and no local server
+
+The extension imports `src/engine` directly — the same detector, the same
+confidence model, the same sanitizer the web app uses. Not a copy, not a
+reimplementation, and not a socket to a background service.
+
+That last part was a deliberate departure from the obvious design. A localhost
+bridge would have been the first server this project ever had, and "nothing
+leaves your device" is currently true because *there is nowhere for it to go*.
+Running in-process also removes the failure mode where the protection silently
+stops working because a service is not running, and keeps a safe paste at a
+function call rather than a round trip.
+
+The bridge still earns its place for the heavy path — a 183 MB model does not
+belong in an extension — and that seam is where model escalation will attach.
+
+### What it watches
+
+Two moments, and nothing else:
+
+| | |
+| --- | --- |
+| **Paste** | Warns. Never blocks — holding the clipboard hostage over a check that is usually clean is not worth it. |
+| **Submit** | Holds the send, checks, then allows or stops it. This is the boundary that matters. |
+
+No keystroke scanning, no mutation observers, no polling. Typing with the
+extension installed is byte-for-byte the same as typing without it.
+
+### Decisions come from policy, not from the browser
+
+`src/engine/policy.ts` turns findings into ALLOW / WARN / BLOCK. The content
+script contains no judgement at all — it reads the composer, asks the worker,
+and renders the answer.
+
+| Finding | Default |
+| --- | --- |
+| Live credential, certain | **block** |
+| Personal data, certain | warn |
+| Roadmap / pricing, certain | warn |
+| Anything uncertain | warn at most — never blocks |
+| Engine unreachable | warn, and says so |
+
+A "possible" name can never stop somebody working, whatever the policy says
+about its category. And "we found nothing" is kept distinct from "we could not
+look": the second one tells you.
+
+### It has to not feel like an obstacle
+
+The tone is a seatbelt light, not a security desk. Concretely:
+
+- It appears **only** when something was found. Silence is the normal case and
+  it stays completely silent — no badge, no toast, no "scanning…".
+- The primary action always moves the user forward — *Mask it*, *Use fake
+  names* — never "you may not do this".
+- Nothing waits on the model. The banner is actionable before stage two starts.
+- Escape dismisses, always. A safety tool you cannot dismiss is one people
+  uninstall.
+- No keystroke scanning, no mutation observers, no polling. Typing with it
+  installed is byte-for-byte the same as typing without it.
+
+### Latency
+
+`npm run check:ext` — engine time on the paste path, percentiles not means:
+
+| Paste | Chars | P50 | P95 | P99 | Decision |
+| --- | --- | --- | --- | --- | --- |
+| Short question | 60 | 0.05 ms | 0.13 ms | 0.86 ms | allow |
+| Pasted article | 1.7 kb | 0.61 ms | 0.67 ms | 0.70 ms | allow |
+| Customer email | 117 | 0.16 ms | 0.23 ms | 0.36 ms | warn |
+| Pasted credential | 92 | 0.05 ms | 0.06 ms | 0.13 ms | **block** |
+| Long document | 18 kb | 16.8 ms | 18.0 ms | 19.3 ms | warn |
+
+No model, no network and no server on this path. Chrome's message passing adds
+roughly 0.1–1 ms on top. These are stage-one figures, which is what determines
+whether the extension is felt at all — stage two runs behind a banner that is
+already on screen, so its cost is spent against time that was going to pass
+anyway.
+
+### Site adapters are three fields
+
+```ts
+{ id: 'chatgpt', label: 'ChatGPT', sendSelectors: ['#composer-submit-button'] }
+```
+
+They answer only "where is the prompt" and "was that a send", using ordinary
+DOM structure — `textarea`, `contenteditable`, `aria-label`, `type="submit"` —
+which has stayed stable across every redesign these products have shipped. No
+framework internals, no generated class names, no private APIs. An unknown AI
+site still gets paste protection through the generic path, and an adapter that
+breaks returns null rather than throwing into somebody's page.
 
 ## Project layout
 

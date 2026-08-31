@@ -72,6 +72,15 @@ interface GlinerSpan {
   score: number
 }
 
+/**
+ * WebGPU is a large speedup for model start-up, but it is not everywhere:
+ * Safari and Firefox have shipped it only recently, and it is unavailable in
+ * a service worker. Feature-detected rather than assumed.
+ */
+function hasWebGPU(): boolean {
+  return typeof navigator !== 'undefined' && 'gpu' in navigator
+}
+
 const isNode =
   typeof process !== 'undefined' &&
   process.versions?.node != null &&
@@ -156,7 +165,11 @@ export function createGlinerConfirmer(
           ? { modelPath: config.modelFile }
           : {
               modelPath: config.modelFile,
-              executionProvider: 'wasm',
+              // WebGPU where the browser has it — it moves the one-off startup
+              // from seconds to under a second on a laptop GPU, and that
+              // startup is the only part of this anybody notices. WASM
+              // otherwise, which is every browser; the model runs either way.
+              executionProvider: hasWebGPU() ? 'webgpu' : 'wasm',
               multiThread: true,
             },
         maxWidth: config.maxWidth,
