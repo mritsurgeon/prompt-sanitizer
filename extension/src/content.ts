@@ -51,6 +51,30 @@ import type {
 
 const adapter = adapterFor(location.hostname)
 
+/**
+ * Diagnostics.
+ *
+ * Adapters are the only part of this system that touches somebody else's DOM,
+ * so they are the part that breaks when a site ships a redesign — and they
+ * break by finding nothing, which is silent. These lines exist so a broken
+ * adapter announces itself instead of quietly degrading to no protection.
+ *
+ * Categories only, never content: which adapter matched, whether the composer
+ * was found. The prompt itself is never logged.
+ */
+const warned = new Set<string>()
+
+function warnOnce(key: string, message: string): void {
+  if (warned.has(key)) return
+  warned.add(key)
+  console.warn(`[ai-safe] ${message}`)
+}
+
+console.info(
+  `[ai-safe] active on ${adapter.label} (${adapter.id} adapter). ` +
+    `Paste warns, send is checked. Nothing leaves this device.`,
+)
+
 /** Text already checked and cleared, so a re-send does not re-prompt. */
 let approved = new Set<string>()
 /** The exact text the user chose to send anyway. */
@@ -149,7 +173,20 @@ document.addEventListener(
     if (text.trim().length < 12) return
 
     const target = promptFrom(event.target)
-    if (!target) return
+    if (!target) {
+      // Pasting into a search box or a comment field is not a composer, and
+      // must stay silent. Only say something where a prompt was plausibly
+      // being written: a large editable that we still could not resolve.
+      const into = event.target
+      if (into instanceof Element && into.closest('[contenteditable], textarea')) {
+        warnOnce(
+          'paste-no-composer',
+          `a paste landed in an editable on ${adapter.label} that the adapter ` +
+            `could not read, so it was NOT checked.`,
+        )
+      }
+      return
+    }
 
     // The paste is never blocked. Blocking it would mean holding the
     // clipboard hostage over a check that is usually clean, and the send is
@@ -169,7 +206,22 @@ async function intercept(event: Event): Promise<void> {
   const target =
     promptFrom(event.target) ??
     (event.target instanceof Element ? promptNear(event.target) : null)
-  if (!target) return
+
+  // The one failure that looks exactly like success.
+  //
+  // If a redesign moves the composer somewhere the adapter cannot find, this
+  // returns and the send proceeds unchecked — indistinguishable, from the
+  // outside, from a prompt that was checked and found clean. Silence is how a
+  // protection layer rots. So say it, loudly, once per page.
+  if (!target) {
+    warnOnce(
+      'submit-no-composer',
+      `saw a send on ${adapter.label} but could not find the composer, so this ` +
+        `prompt was NOT checked. The site's layout has probably changed — ` +
+        `please report it.`,
+    )
+    return
+  }
 
   const text = target.read().trim()
   if (text.length < 12) return
