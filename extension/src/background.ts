@@ -4,6 +4,7 @@ import { sanitize } from '@/engine/sanitize'
 import { runtime } from './browser'
 import { APP_ORIGIN } from './config'
 import { runDeepCheck, toWire } from './deep'
+import type { OffscreenDeepRequest } from './offscreen'
 import {
   EMPTY_METRICS,
   MAX_TEXT_BYTES,
@@ -112,36 +113,92 @@ function check(request: CheckRequest): CheckResponse {
 }
 
 /**
+ * The offscreen document, created once and kept.
+ *
+ * Chrome allows exactly one, so this is idempotent and tolerates the
+ * already-exists race that happens when two tabs flag something at the same
+ * moment. Returns false where the API does not exist — Firefox has no
+ * equivalent — and stage two then runs in this worker instead.
+ */
+let offscreenReady: Promise<boolean> | null = null
+
+function ensureOffscreen(): Promise<boolean> {
+  if (offscreenReady) return offscreenReady
+
+  offscreenReady = (async () => {
+    const api = (
+      runtime as typeof chrome & { offscreen?: typeof chrome.offscreen }
+    ).offscreen
+    if (!api) return false
+
+    try {
+      if (await api.hasDocument()) return true
+      await api.createDocument({
+        url: 'offscreen.html',
+        reasons: ['WORKERS' as chrome.offscreen.Reason],
+        justification:
+          'Keeps the local entity-recognition model resident between prompts; ' +
+          'a service worker is terminated on idle and would reload it each time.',
+      })
+      return true
+    } catch (cause) {
+      // A concurrent create is a race, not a failure — the document we wanted
+      // now exists. Anything else means stage two runs in the worker.
+      const message = cause instanceof Error ? cause.message : ''
+      if (message.includes('Only a single offscreen')) return true
+      console.warn(
+        '[ai-safe] no offscreen document, so the closer look runs in the ' +
+          'worker without the model.',
+        cause,
+      )
+      return false
+    }
+  })()
+
+  return offscreenReady
+}
+
+/**
  * Stage two — the closer look.
  *
  * Only the findings the rules could not settle are examined, and only the
  * window around each one, never the whole prompt.
  *
- * ## Why the neural model is not the thing running here
+ * Preferably in the offscreen document, where GLiNER can stay resident between
+ * prompts. Where that is unavailable — Firefox, or a create that failed — the
+ * identical code runs here with the deterministic deep-context confirmer,
+ * which needs no files and cannot fail.
  *
- * GLiNER cannot run inside a browser extension. Three separate blockers, each
- * sufficient on its own:
- *
- *   1. MV3's content security policy forbids `eval`, and `onnxruntime-web`
- *      uses it. There is no manifest key that permits it.
- *   2. The ONNX runtime is 44 MB of JavaScript before any weights exist.
- *   3. The weights are another 183 MB, which cannot live in an extension
- *      package and cannot be fetched from a third party at scan time.
- *
- * So the confirmer here is the engine's deterministic deep-context pass: it
- * re-reads every occurrence of the value in its window and votes across them,
- * reads the whole clause rather than the adjacent word, and checks pronoun and
- * job-role agreement. It needs no files, cannot fail to load, and measurably
- * improves both precision and recall over the rules alone.
- *
- * The neural tier is one click away instead — "Edit in AI Safe" hands the
- * prompt to the web app, which is an ordinary page with an ordinary CSP and
- * where GLiNER already runs at 100% F1 on the held-out set. That is the honest
- * split: what the browser can do, it does inline; what it cannot, it hands
- * over rather than pretending.
+ * So a second opinion always happens, and `confirmedBy` reports which one gave
+ * it. Measured on the two held-out ambiguity sets: deep-context 46/48, GLiNER
+ * 47/48, and GLiNER's one miss is a person relabelled as an organisation — the
+ * value is still detected and still redacted.
  */
 async function deepCheck(request: DeepCheckRequest): Promise<DeepCheckResponse> {
   metrics.escalations += 1
+
+  if (await ensureOffscreen()) {
+    const relayed = await new Promise<DeepCheckResponse | null>((resolve) => {
+      const message: OffscreenDeepRequest = {
+        type: 'offscreen-deep-check',
+        text: request.text,
+      }
+      try {
+        runtime.runtime.sendMessage(message, (response: DeepCheckResponse) => {
+          resolve(runtime.runtime.lastError ? null : (response ?? null))
+        })
+      } catch {
+        resolve(null)
+      }
+    })
+
+    if (relayed) {
+      record(relayed.ms)
+      return relayed
+    }
+    // Fall through and answer here rather than leaving the user with nothing.
+  }
+
   const result = await runDeepCheck(request.text)
   record(result.ms)
   return result

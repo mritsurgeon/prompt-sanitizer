@@ -76,13 +76,36 @@ const BASE = {
   ],
 }
 
+/**
+ * `wasm-unsafe-eval` is what MV3 calls "allowed to compile WebAssembly".
+ *
+ * The name is alarming and the capability is not: it permits
+ * `WebAssembly.compile`, and nothing else. It does **not** enable `eval` or
+ * `new Function` for JavaScript — MV3 has no way to permit those on an
+ * extension page, and does not need to here. Without this key the ONNX runtime
+ * cannot instantiate at all.
+ */
+const CSP = {
+  extension_pages:
+    "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+}
+
 const MANIFESTS = {
   chrome: {
     ...BASE,
+    // `offscreen` gives the second-stage model somewhere to stay resident. A
+    // service worker is killed on idle, which would evict 183 MB of weights
+    // between one prompt and the next.
+    permissions: [...BASE.permissions, 'offscreen'],
+    content_security_policy: CSP,
     background: { service_worker: 'background.js', type: 'module' },
   },
   firefox: {
+    // No offscreen API in Firefox, so stage two runs in the worker there with
+    // the deterministic confirmer. Requesting a permission the browser does not
+    // recognise would make the whole manifest fail to load.
     ...BASE,
+    content_security_policy: CSP,
     background: { scripts: ['background.js'], type: 'module' },
     browser_specific_settings: {
       gecko: { id: 'ai-safe@promptsanitizer.local', strict_min_version: '115.0' },
@@ -101,27 +124,95 @@ const MANIFESTS = {
 const ENTRIES = [
   ['background', 'extension/src/background.ts'],
   ['content', 'extension/src/content.ts'],
+  ['offscreen', 'extension/src/offscreen.ts'],
   ['popup/popup', 'extension/src/popup/popup.ts'],
 ]
 
+/**
+ * Cutting the ONNX runtime down to the one backend that can actually run here.
+ *
+ * `gliner` statically imports all three backends at module top —
+ * `onnxruntime-web`, `/webgpu` and `/webgl` — so a bundler has no way to drop
+ * the unused two. Left alone that was 44 MB of code which could never execute,
+ * because the confirmer pins `executionProvider: 'wasm'`.
+ *
+ * The two GPU backends are aliased to a throwing stub, and the default entry is
+ * redirected from the everything-included browser build to `ort.wasm.min.js` —
+ * the WASM-only build, 0.15 MB against 15 MB. It exposes exactly the three
+ * things `gliner` touches: `env.wasm`, `InferenceSession` and `Tensor`.
+ */
+const ORT_ALIASES = {
+  'onnxruntime-web/webgpu': join(root, 'extension/src/ort-stub.ts'),
+  'onnxruntime-web/webgl': join(root, 'extension/src/ort-stub.ts'),
+  'onnxruntime-web': join(
+    root,
+    'node_modules/onnxruntime-web/dist/ort.wasm.min.js',
+  ),
+}
+
 for (const [name, entry] of ENTRIES) {
+  /**
+   * The offscreen page is the one entry loaded as a real ES module by an HTML
+   * page, so it can code-split. That matters: inlining its dynamic imports
+   * pulls the model machinery in eagerly, when the point is that none of it
+   * loads until stage two actually escalates.
+   *
+   * The other three must stay inlined — a content script is injected as a
+   * classic script, and an MV3 service worker cannot dynamically import.
+   */
+  const splittable = name === 'offscreen'
+
   await build({
     root,
     configFile: false,
-    // The app's public/ holds 185 MB of model weights. They belong to the web
+    // The app's public/ holds 193 MB of model weights. They belong to the web
     // app, not the extension, and copying them here would make every build
-    // enormous and ship the model into a context that never loads it.
+    // enormous. The extension fetches them from the app's origin instead.
     publicDir: false,
-    resolve: { alias: { '@': join(root, 'src') } },
+    resolve: {
+      alias: { '@': join(root, 'src'), ...(splittable ? ORT_ALIASES : {}) },
+    },
     build: {
       outDir: out,
       emptyOutDir: name === 'background',
       target: 'es2022',
+      // Never base64-inline an asset — a 10 MB wasm becoming 13 MB of base64
+      // inside a JavaScript file both doubles the disk cost and has to be
+      // parsed as source before it can be compiled as WebAssembly.
+      assetsInlineLimit: 0,
+      // Explicit, because lib mode does not always apply it to vendor chunks:
+      // the ONNX runtime came out at 14.6 MB pretty-printed from a 0.5 MB
+      // minified source.
+      minify: 'esbuild',
       lib: { entry: join(root, entry), formats: ['es'], fileName: () => `${name}.js` },
-      rollupOptions: { output: { inlineDynamicImports: true } },
+      rollupOptions: {
+        output: {
+          inlineDynamicImports: !splittable,
+          ...(splittable ? { chunkFileNames: 'chunks/[name]-[hash].js' } : {}),
+        },
+      },
     },
   })
 }
+
+await cp(
+  join(root, 'extension/src/offscreen.html'),
+  join(out, 'offscreen.html'),
+)
+
+/**
+ * The ONNX runtime's WebAssembly binary, shipped with the extension.
+ *
+ * Executable code is not fetched over the network — MV3 forbids it, and it
+ * would defeat the point of the CSP. Only the model *weights* are fetched, and
+ * only from the origin that provisioned them.
+ */
+const ORT_WASM = 'ort-wasm-simd-threaded.wasm'
+await mkdir(join(out, 'wasm'), { recursive: true })
+await cp(
+  join(root, 'node_modules/onnxruntime-web/dist', ORT_WASM),
+  join(out, 'wasm', ORT_WASM),
+)
 
 await mkdir(join(out, 'popup'), { recursive: true })
 await cp(

@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AI Safe — local checker</title>
+<!--
+  Never shown. This page exists only so the second-stage model has somewhere to
+  stay resident: an MV3 service worker is terminated on idle, which would evict
+  183 MB of weights between one prompt and the next.
+-->
+<script type="module" src="./offscreen.js"></script>

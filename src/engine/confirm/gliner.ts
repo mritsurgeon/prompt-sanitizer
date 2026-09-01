@@ -57,6 +57,15 @@ export interface GlinerOptions {
   modelName?: string
   /** Full path or URL to the .onnx weights. */
   modelFile?: string
+  /**
+   * Where the ONNX runtime's WebAssembly binary is served from.
+   *
+   * Must always be set. `gliner` defaults this to a jsDelivr CDN URL, so
+   * leaving it unset makes every cold model load a third-party request at scan
+   * time — which this project promises never to do. `npm run provision:model`
+   * copies the binary out of node_modules into our own origin.
+   */
+  wasmPaths?: string
   /** Minimum span score to believe. */
   threshold?: number
   maxWidth?: number
@@ -90,6 +99,8 @@ const DEFAULTS: Required<GlinerOptions> = {
   basePath: '/models/',
   modelName: 'gliner-small',
   modelFile: '/models/gliner-small/onnx/model.onnx',
+  // Our own origin, never the CDN gliner would otherwise reach for.
+  wasmPaths: '/models/ort/',
   threshold: 0.45,
   maxWidth: 12,
   labels: DEFAULT_LABELS,
@@ -170,6 +181,9 @@ export function createGlinerConfirmer(
               // startup is the only part of this anybody notices. WASM
               // otherwise, which is every browser; the model runs either way.
               executionProvider: hasWebGPU() ? 'webgpu' : 'wasm',
+              // Explicit, because gliner's default is a jsDelivr CDN URL and a
+              // scan must never depend on a third party being reachable.
+              wasmPaths: config.wasmPaths,
               multiThread: true,
             },
         maxWidth: config.maxWidth,

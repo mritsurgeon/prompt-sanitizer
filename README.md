@@ -37,7 +37,7 @@ Other commands:
 | `npm run check` | Type-check, lint, test, and score the corpus and the sample files |
 | `npm run check:corpus` | Score the labelled corpus and print every false positive and false negative |
 | `npm run check:heldout -- bench/heldout-ambiguity-2.json` | Score a held-out ambiguity set the engine was **not** tuned against. Add `--gliner` to score it with the model |
-| `npm run provision:model` | Download the GLiNER weights once (~183 MB) into `public/models/` |
+| `npm run provision:model` | Provision the GLiNER weights and the ONNX runtime once (~193 MB) into `public/models/` |
 | `npm run check:perf` | Per-layer and end-to-end latency, plus whether the confirmer was invoked |
 | `npm run check:engine` | Print what the detector finds on the demo prompt, in all three cleaning modes |
 | `npm run check:files` | Round-trip every sample file: extract → scan → clean → re-open the cleaned copy → re-scan for leaks |
@@ -236,7 +236,7 @@ single inference per window adjudicates the candidates inside it *and* surfaces
 what was missed.
 
 ```bash
-npm run provision:model    # ~183 MB into public/models/, once
+npm run provision:model    # ~193 MB into public/models/, once
 ```
 
 The weights are git-ignored and served from the app's own origin. Nothing is
@@ -516,11 +516,11 @@ A thin WebExtension that checks a prompt on your device before it reaches
 ChatGPT, Claude, Gemini or Copilot.
 
 ```bash
-npm run ext:build      # builds extension/dist (~120 KB)
+npm run ext:build      # builds extension/dist (~11 MB)
 ```
 
 - **Chrome / Edge** — `chrome://extensions` → Developer mode → Load unpacked →
-  pick `extension/dist`
+  pick `extension/dist` (~11 MB: 9.5 MB of that is the ONNX wasm binary)
 - **Firefox** — rename `manifest.firefox.json` to `manifest.json`, then
   `about:debugging` → Load Temporary Add-on
 
@@ -530,9 +530,15 @@ There is a local test bench, so the extension can be exercised without an
 account on anything:
 
 ```bash
-npm run ext:dev        # build, and also arm the extension on localhost:4180
-npm run ext:bench      # serve the bench
+npm run provision:model   # once — 193 MB of weights + the ONNX runtime
+npm run dev               # the app, on :5173 — serves the weights to the extension
+npm run ext:dev           # build, and also arm the extension on localhost:4180
+npm run ext:bench         # serve the bench
 ```
+
+`npm run dev` matters for two things: it serves the GLiNER weights that stage
+two fetches, and it is where **Edit in AI Safe** opens. Without it the extension
+still works — stage two falls back to the deterministic confirmer and says so.
 
 Load `extension/dist` unpacked, open <http://localhost:4180>, and paste one of
 the sample prompts into either composer. The page is a fake AI composer — one
@@ -596,34 +602,102 @@ and usually *withdraws* a finding rather than adding one:
 
 If they clean, dismiss or send before it returns, the late answer is discarded.
 
-### Why GLiNER is not the thing running in the extension
+### Where GLiNER runs, and what it took to get it there
 
-It cannot be. Three independent blockers, each sufficient on its own:
+Stage two runs GLiNER small v2.1 in an **offscreen document** — MV3's primitive
+for keeping something alive past a service worker's thirty-second idle timeout.
+Without it, 183 MB of weights would be evicted and reloaded between one prompt
+and the next, turning a one-off cost into a recurring one.
 
-| | |
+Three things looked like blockers and only one was real.
+
+**MV3 forbids `eval`, and `onnxruntime-web` contains one.** Not a blocker. It is
+protobufjs's `inquire` — an obfuscated `require()` probe for optional Node
+modules, wrapped in `try/catch`:
+
+```js
+function inquire(moduleName){
+  try { var mod = eval("quire".replace(/^/,"re"))(moduleName); … }
+  catch(t){}          // ← a CSP EvalError lands here
+  return null
+}
+```
+
+A CSP-blocked `eval` throws a catchable `EvalError`, so this already fails
+harmlessly in every browser. It also never reaches the bundle: the WASM-only
+ORT build does not include protobufjs at all.
+
+**The runtime is 44 MB.** It was, and it did not have to be. `gliner` statically
+imports all three ONNX backends at module top, so no bundler can drop the two
+that cannot run here. Fixed with three aliases in `build.mjs`:
+
+| | Size |
 | --- | --- |
-| MV3 forbids `eval` | `onnxruntime-web` uses direct `eval`. No manifest key permits it. |
-| The runtime is 44 MB | ONNX runtime JavaScript, before any weights exist. |
-| The weights are 183 MB | Cannot ship in an extension package, and must not be fetched from a third party at scan time. |
+| naive bundle, all three backends | 44 MB |
+| GPU backends aliased to a stub | 26 MB |
+| default entry → `ort.wasm.min.js` | **16 kB** |
 
-An offscreen document was built and measured before this was settled — MV3's
-own primitive for keeping something resident past a service worker's idle
-timeout — and it turned a 132 KB extension into a 44 MB one that would still
-have hit the CSP wall at runtime.
+The WASM-only build exposes exactly what `gliner` touches — `env.wasm`,
+`InferenceSession`, `Tensor` — and the confirmer already pins
+`executionProvider: 'wasm'`, so nothing is lost.
 
-So the extension's stage two is the engine's **deterministic deep-context
-confirmer**: it re-reads every occurrence of a value in its window and votes
-across them, reads the whole clause rather than the adjacent word, and checks
-pronoun and job-role agreement. Zero bytes, cannot fail to load, and measurably
-better than the rules alone.
+**The weights are 183 MB.** Real, and the reason for the split below.
 
-The neural tier is one click away instead. **Edit in AI Safe** hands the prompt
-to the web app — an ordinary page, with an ordinary CSP, where GLiNER already
-runs at 100% F1 on the held-out set. The prompt travels through the extension's
-session storage, never the URL, so it never reaches history or the omnibox.
+| What | Where from |
+| --- | --- |
+| ONNX runtime JS | bundled, 16 kB |
+| `transformers` (tokenizer) | bundled, 480 kB |
+| `ort-wasm-simd-threaded.wasm` | bundled, 9.5 MB |
+| GLiNER weights, 183 MB | fetched from the app's origin, then cached |
 
-That is the honest split: what the browser can do, it does inline; what it
-cannot, it hands over rather than pretending.
+Executable code always ships with the extension — MV3 forbids fetching script,
+and loading code over the network would defeat the CSP. Only the weights are
+fetched, and only from the origin that provisioned them. Total extension:
+**11 MB**, of which 9.5 MB is the wasm binary.
+
+The manifest needs `'wasm-unsafe-eval'`, which despite the name permits only
+`WebAssembly.compile` — not `eval` or `new Function` for JavaScript.
+
+If the weights are unreachable — the app was never started, or never
+provisioned — the engine falls back to its deterministic **deep-context**
+confirmer, which needs no files and cannot fail. Stage two therefore always
+happens, and `confirmedBy` reports which one answered, so a degraded run is
+visible rather than silent. Firefox has no offscreen API, so it always takes
+that path.
+
+#### Is the model worth it?
+
+Measured on both held-out ambiguity sets — 48 cases the engine was never tuned
+against:
+
+| Set | deep-context | GLiNER small v2.1 |
+| --- | --- | --- |
+| 1 | 23/24 · F1 **95.7** · P 91.7 / R 100 | 23/24 · F1 95.2 · P 100 / R 90.9 |
+| 2 | 23/24 · F1 95.2 · P 100 / R 90.9 | 24/24 · F1 **100** |
+| **total** | **46/48** | **47/48** |
+
+One case in 48, and they fail in opposite directions: deep-context over-flags
+once, GLiNER under-flags once. GLiNER's miss is the `Chase from procurement`
+relabel, where the value is still detected and still redacted — just as
+ORGANISATION rather than PERSON. On "did the data get protected" it is 48/48.
+
+So the honest reading is that the gap on *these* sets is narrow, and both sets
+are small. The case for the model is not this table — it is recall on names no
+word list contains, which is a thing rules cannot do at all and which these
+sets barely probe.
+
+### The web app was reaching for a CDN
+
+Worth recording because it contradicted a guarantee this README makes.
+`gliner` defaults `wasmPaths` to
+`https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/`, and nothing
+overrode it — so every cold model load in the web app fetched the ONNX runtime
+from a third party at scan time.
+
+`npm run provision:model` now copies the binary out of `node_modules` into
+`public/models/ort/` (no download — it was already on disk), and
+`createGlinerConfirmer` takes an explicit `wasmPaths` that defaults to our own
+origin.
 
 ### There is no second engine, and no local server
 
@@ -638,8 +712,10 @@ Running in-process also removes the failure mode where the protection silently
 stops working because a service is not running, and keeps a safe paste at a
 function call rather than a round trip.
 
-The bridge still earns its place for the heavy path — a 183 MB model does not
-belong in an extension — and that seam is where model escalation will attach.
+That held for the model too. The obvious design for the heavy path was a
+localhost bridge to a service owning the weights; the offscreen document does
+the same job with no server, no port and no process to keep alive. The only
+thing crossing an origin is a `fetch` for the weight file.
 
 ### What it watches
 

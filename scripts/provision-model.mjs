@@ -9,7 +9,7 @@
  * git-ignored: provision it per machine rather than committing the weights.
  */
 import { createWriteStream } from 'node:fs'
-import { mkdir, stat } from 'node:fs/promises'
+import { copyFile, mkdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
@@ -18,6 +18,20 @@ import { pipeline } from 'node:stream/promises'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const target = join(root, 'public', 'models', 'gliner-small')
 const base = 'https://huggingface.co/onnx-community/gliner_small-v2.1/resolve/main'
+
+/**
+ * The ONNX runtime's WebAssembly binary, served from our own origin.
+ *
+ * `gliner` defaults `wasmPaths` to a jsDelivr CDN URL, which would make every
+ * cold model load a third-party request at scan time — exactly what this
+ * project promises never to do. The file is already in node_modules, so this is
+ * a copy rather than a download.
+ *
+ * Only the SIMD+threaded build is copied. It is the one `gliner` asks for by
+ * name, and shipping the other three would be 27 MB of dead weight.
+ */
+const ORT_WASM = 'ort-wasm-simd-threaded.wasm'
+const ORT_TARGET = join(root, 'public', 'models', 'ort')
 
 /** int8 weights — the smallest build that keeps full accuracy on our corpus. */
 const FILES = [
@@ -71,5 +85,18 @@ for (const entry of FILES) {
   total += await download(from, to)
 }
 
+// The runtime, from node_modules rather than the network.
+await mkdir(ORT_TARGET, { recursive: true })
+const wasmSource = join(root, 'node_modules', 'onnxruntime-web', 'dist', ORT_WASM)
+const wasmTarget = join(ORT_TARGET, ORT_WASM)
+if ((await sizeOf(wasmTarget)) > 0) {
+  console.log(`  have  ${`ort/${ORT_WASM}`.padEnd(28)} ${mb(await sizeOf(wasmTarget))}`)
+} else {
+  await copyFile(wasmSource, wasmTarget)
+  console.log(`  copy  ${`ort/${ORT_WASM}`.padEnd(28)} ${mb(await sizeOf(wasmTarget))}`)
+}
+total += await sizeOf(wasmTarget)
+
 console.log(`\nDone — ${mb(total)} provisioned.`)
 console.log('The app will use it automatically on the next scan that needs it.')
+console.log('Nothing is fetched from a third party at scan time.')
