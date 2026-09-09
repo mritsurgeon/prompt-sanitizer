@@ -1,3 +1,4 @@
+import type { ExecutionProvider } from '../metrics'
 import type { CategoryId } from '../types'
 
 /**
@@ -75,10 +76,26 @@ export interface ModelCost {
   perCandidateMs: number | null
 }
 
+/**
+ * What the confirmer knows about its own execution that the engine cannot see.
+ *
+ * Optional, because a deterministic confirmer has no execution provider and
+ * no tokenizer — it reports nothing and the envelope records `none`.
+ */
+export interface ModelRuntime {
+  ep: ExecutionProvider
+  /** Labels passed to the model. Moves from ~10 to 2 under confusion-set
+   *  restriction, so it has to be observable before and after. */
+  labelCount?: number
+  tokenCountBucket?: 64 | 128 | 256 | 512
+}
+
 export interface LocalModelDetector {
   id: string
   label: string
   cost: ModelCost
+  /** Populated once loaded, by confirmers that run a tensor runtime. */
+  readonly runtime?: ModelRuntime
   /** Cheap check — must not load anything. */
   isAvailable(): Promise<boolean>
   /** Idempotent. Called only when there is at least one ambiguous candidate. */
