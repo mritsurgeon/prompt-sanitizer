@@ -8,6 +8,7 @@ import {
 } from './adapters'
 import { runtime } from './browser'
 import { APP_ORIGINS } from './config'
+import { installFileInterceptors, type FileGuardDeps } from './files'
 import {
   applyDeeper,
   bannerIsDeep,
@@ -19,7 +20,9 @@ import {
   type BannerAction,
 } from './ui'
 import type {
+  AttachmentResponse,
   CheckResponse,
+  ConfigResponse,
   DeepCheckResponse,
   Request,
   SanitizeResponse,
@@ -52,6 +55,22 @@ import type {
 const adapter = adapterFor(location.hostname)
 
 /**
+ * Below this, there is nothing the engine could find.
+ *
+ * It was 12, chosen as a round number, and 12 hides real findings: the
+ * shortest text the engine can flag is a five-character email address
+ * (`a@b.c`), so "what domain is x@y.com?" was going through the submit
+ * boundary unchecked. Sending an address on its own is a perfectly ordinary
+ * prompt.
+ *
+ * Four, so it sits below the shortest thing that can be found rather than at
+ * it — a future rule could be shorter, and `content.test.ts` asserts this stays
+ * under the engine's real minimum so that a shorter rule fails the build
+ * instead of silently slipping past the gate.
+ */
+export const MIN_CHARS = 4
+
+/**
  * Diagnostics.
  *
  * Adapters are the only part of this system that touches somebody else's DOM,
@@ -70,22 +89,70 @@ function warnOnce(key: string, message: string): void {
   console.warn(`[ai-safe] ${message}`)
 }
 
-console.info(
-  `[ai-safe] active on ${adapter.label} (${adapter.id} adapter). ` +
-    `Paste warns, send is checked. Nothing leaves this device.`,
-)
+/**
+ * Clearance, scoped to the composer it was granted in and compared on
+ * normalised text.
+ *
+ * Both halves fix real bugs. Keying on the element stops a clearance granted
+ * in one editable from silencing a different one on the same page.
+ *
+ * Normalising matters more. Cleaning writes the sanitizer's string with
+ * `target.write()`, but the next send reads the composer back with
+ * `target.read()` — and for a `contenteditable` those are not the same
+ * function. `write` sets `textContent`; the site's editor then re-wraps the
+ * content into its own nodes, and `read` returns `innerText`, which inserts
+ * and collapses whitespace around them. Comparing raw strings therefore
+ * misses, and the user gets warned a second time about text this tool wrote
+ * itself — which reads as the cleaning not having worked.
+ */
+const cleared = new WeakMap<HTMLElement, Set<string>>()
 
-/** Text already checked and cleared, so a re-send does not re-prompt. */
-let approved = new Set<string>()
+/** Editors move whitespace around; nothing else about the text may differ. */
+function normalise(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
 /** The exact text the user chose to send anyway. */
 let overridden: string | null = null
 /** The prompt behind the banner currently on screen. */
 let showing: { text: string; target: PromptTarget } | null = null
 
-/** Keep the approved set from growing without bound on a long session. */
-function approve(text: string) {
-  if (approved.size > 50) approved = new Set()
-  approved.add(text)
+function approve(element: HTMLElement, text: string) {
+  const set = cleared.get(element) ?? new Set<string>()
+  // Bounded, so a long session cannot grow this without limit.
+  if (set.size > 50) set.clear()
+  set.add(normalise(text))
+  cleared.set(element, set)
+}
+
+function isApproved(element: HTMLElement, text: string): boolean {
+  const key = normalise(text)
+  return cleared.get(element)?.has(key) === true || overridden === key
+}
+
+/**
+ * How this browser is configured, fetched once at load.
+ *
+ * Only one field changes what happens on the page: in observe-only mode the
+ * send is not held at all. That is the difference between an audit deployment
+ * and an enforcing one, and it has to be known *before* the send rather than
+ * after — holding a keystroke and then releasing it is still holding it, and
+ * an organisation running in audit mode has asked for the page not to be
+ * touched.
+ *
+ * Until it arrives the enforcing path applies, which is the conservative
+ * direction: a load race must not silently disable protection.
+ */
+let observeOnly = false
+let managedByPolicy = false
+
+/** Test-only: forget every clearance and any banner state between cases. */
+export function resetForTests(): void {
+  overridden = null
+  showing = null
+  observeOnly = false
+  managedByPolicy = false
+  warned.clear()
 }
 
 /**
@@ -158,49 +225,41 @@ async function collectHandoff(): Promise<void> {
   }
 }
 
-if (APP_ORIGINS.includes(location.origin)) {
-  void collectHandoff()
-}
-
 // ---------------------------------------------------------------------------
 // Paste
 // ---------------------------------------------------------------------------
 
-document.addEventListener(
-  'paste',
-  (event: ClipboardEvent) => {
-    const text = event.clipboardData?.getData('text/plain') ?? ''
-    if (text.trim().length < 12) return
+export function onPaste(event: ClipboardEvent): void {
+  const text = event.clipboardData?.getData('text/plain') ?? ''
+  if (text.trim().length < MIN_CHARS) return
 
-    const target = promptFrom(event.target)
-    if (!target) {
+  const target = promptFrom(event.target)
+  if (!target) {
       // Pasting into a search box or a comment field is not a composer, and
       // must stay silent. Only say something where a prompt was plausibly
       // being written: a large editable that we still could not resolve.
-      const into = event.target
-      if (into instanceof Element && into.closest('[contenteditable], textarea')) {
-        warnOnce(
-          'paste-no-composer',
-          `a paste landed in an editable on ${adapter.label} that the adapter ` +
-            `could not read, so it was NOT checked.`,
-        )
-      }
-      return
+    const into = event.target
+    if (into instanceof Element && into.closest('[contenteditable], textarea')) {
+      warnOnce(
+        'paste-no-composer',
+        `a paste landed in an editable on ${adapter.label} that the adapter ` +
+          `could not read, so it was NOT checked.`,
+      )
     }
+    return
+  }
 
-    // The paste is never blocked. Blocking it would mean holding the
-    // clipboard hostage over a check that is usually clean, and the send is
-    // the boundary that actually matters. This warns; submit enforces.
-    void review(text, 'paste', target, false)
-  },
-  true,
-)
+  // The paste is never blocked. Blocking it would mean holding the clipboard
+  // hostage over a check that is usually clean, and the send is the boundary
+  // that actually matters. This warns; submit enforces.
+  void review(text, 'paste', target, false)
+}
 
 // ---------------------------------------------------------------------------
 // Submit
 // ---------------------------------------------------------------------------
 
-async function intercept(event: Event): Promise<void> {
+export async function intercept(event: Event): Promise<void> {
   if (!isSubmitEvent(event, adapter)) return
 
   const target =
@@ -224,8 +283,21 @@ async function intercept(event: Event): Promise<void> {
   }
 
   const text = target.read().trim()
-  if (text.length < 12) return
-  if (approved.has(text) || overridden === text) return
+  if (text.length < MIN_CHARS) return
+  if (isApproved(target.element, text)) return
+
+  /**
+   * Audit mode: look, record, and let the send go.
+   *
+   * Deliberately before `preventDefault`. A policy that enforces nothing has
+   * no business interrupting anybody, not even for the sub-millisecond it
+   * takes to be told there is nothing to do — the point of an audit rollout is
+   * that users cannot tell it is there.
+   */
+  if (observeOnly) {
+    void review(text, 'submit', target, false)
+    return
+  }
 
   // How the send was made, so it can be re-issued the same way if it is
   // cleared. Captured before preventDefault, while the event is still live.
@@ -238,15 +310,135 @@ async function intercept(event: Event): Promise<void> {
   event.preventDefault()
   event.stopPropagation()
 
-  const response = await review(text, 'submit', target, true, control)
-  if (response && response.decision === 'allow') {
-    approve(text)
-    resend(target, control)
+  try {
+    const response = await review(text, 'submit', target, true, control)
+    if (response && response.decision === 'allow') {
+      approve(target.element, text)
+      resend(target, control)
+    }
+  } catch (cause) {
+    // Everything from here on runs after the send was cancelled, so a throw
+    // in the banner or the editor would leave the message deleted: cancelled,
+    // unsent, and with nothing on screen to say so. Eating somebody's prompt
+    // is the worst outcome available, so fail open — but only when no banner
+    // made it up. If one did, the user has the controls and it is theirs to
+    // resolve, not ours to send behind them.
+    warnOnce(
+      'submit-threw',
+      `the check failed after the send was already held, so this prompt was ` +
+        `re-sent UNCHECKED rather than discarded. Please report it.`,
+    )
+    console.warn('[ai-safe] submit interception failed', cause)
+    if (!bannerIsOpen()) {
+      approve(target.element, text)
+      resend(target, control)
+    }
   }
 }
 
-document.addEventListener('keydown', (e) => void intercept(e), true)
-document.addEventListener('click', (e) => void intercept(e), true)
+/**
+ * The file guard's dependencies.
+ *
+ * Injected rather than imported by `files.ts` so that module can be tested
+ * without a worker, a shadow root or a banner — and so the rule this script
+ * lives by still holds there: it reads, it asks, it renders, and it decides
+ * nothing.
+ */
+const fileDeps: FileGuardDeps = {
+  check: (text) =>
+    ask<CheckResponse>({ type: 'check', reason: 'file', text, host: location.hostname }),
+
+  clean: (text, mode) =>
+    ask<SanitizeResponse>(
+      { type: 'sanitize', text, host: location.hostname, mode },
+      DEEP_TIMEOUT_MS,
+    ),
+
+  // Documents go to the offscreen reader, which owns the parsers. The budget
+  // is the long one: opening a spreadsheet is not a sub-millisecond operation
+  // and the user is watching a file they just dropped, not a held keystroke.
+  parse: (name, bytes, mode) =>
+    ask<AttachmentResponse>(
+      { type: 'attachment', name, bytes, host: location.hostname, mode },
+      DEEP_TIMEOUT_MS,
+    ),
+
+  present: ({ file, response, allowAnyway }) =>
+    new Promise((resolve) => {
+      showBanner({
+        response: {
+          ...response,
+          // The banner was written for prompts. Naming the file is the whole
+          // difference: "check this before sending" is useless when the thing
+          // being sent is an attachment the user may have forgotten they
+          // attached.
+          headline:
+            response.decision === 'block'
+              ? `Sensitive information in ${file.name}`
+              : `Check ${file.name} before attaching it`,
+        },
+        allowSendAnyway: allowAnyway,
+        onAction: (action) => {
+          dismissBanner()
+          showing = null
+          if (action === 'send-anyway') resolve('anyway')
+          else if (action === 'redact' || action === 'pseudonymize') resolve('clean')
+          else resolve('cancel')
+        },
+      })
+    }),
+
+  warn: warnOnce,
+}
+
+/**
+ * Attach to the page.
+ *
+ * Kept out of module scope so importing this file does nothing: the listeners
+ * are `document`-level and capture-phase, and a module that installs them on
+ * import cannot be exercised by a test without three suites fighting over one
+ * document.
+ *
+ * Capture phase on purpose — a site that stops propagation on its own
+ * composer would otherwise hide the send from us entirely.
+ */
+export function install(): void {
+  console.info(
+    `[ai-safe] active on ${adapter.label} (${adapter.id} adapter). ` +
+      `Paste warns, send is checked. Nothing leaves this device.`,
+  )
+
+  if (APP_ORIGINS.includes(location.origin)) {
+    void collectHandoff()
+  }
+
+  /**
+   * One config fetch, at load.
+   *
+   * `storage.managed` is a policy push rather than a hot value, so the worker
+   * resolves it once and answers this synchronously. Asking per send would put
+   * a round trip on the path that has to stay imperceptible.
+   */
+  void (async () => {
+    const config = await ask<ConfigResponse>({ type: 'config' })
+    if (!config) return
+    observeOnly = config.observeOnly
+    managedByPolicy = config.managed
+    if (managedByPolicy) {
+      console.info(
+        `[ai-safe] configuration is managed by your organisation` +
+          `${observeOnly ? ' (audit mode: nothing is blocked)' : ''}.`,
+      )
+    }
+  })()
+
+  document.addEventListener('paste', onPaste, true)
+  document.addEventListener('keydown', (e) => void intercept(e), true)
+  document.addEventListener('click', (e) => void intercept(e), true)
+
+  // Attachments. The composer was never the only way in.
+  installFileInterceptors(fileDeps)
+}
 
 /**
  * Re-issue the send the user originally made, the way they made it.
@@ -322,7 +514,7 @@ async function review(
   if (response.decision === 'allow') {
     dismissBanner()
     showing = null
-    if (reason === 'submit') approve(text)
+    if (reason === 'submit') approve(target.element, text)
     return response
   }
 
@@ -390,8 +582,8 @@ async function handle(
   if (action === 'send-anyway') {
     // Their call, and an informed one — they have seen the findings. Recorded
     // so the same text does not prompt again on the retry.
-    overridden = text
-    approve(text)
+    overridden = normalise(text)
+    approve(target.element, text)
     dismissBanner()
     showing = null
     resend(target, control)
@@ -423,7 +615,11 @@ async function handle(
   if (!cleaned) return
 
   target.write(cleaned.text)
-  approve(cleaned.text)
+  // Both strings, because they can differ. `cleaned.text` is what we asked
+  // for; the read-back is what the editor actually kept. Approving only the
+  // first is what warned the user twice about our own output.
+  approve(target.element, cleaned.text)
+  approve(target.element, target.read())
   showing = null
 
   // Never silently. The user must know their words changed.

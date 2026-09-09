@@ -1,5 +1,22 @@
 import { scan, scanWithConfirmation } from '@/engine/detect'
-import { DEFAULT_POLICY, evaluate, unavailableOutcome } from '@/engine/policy'
+import { registerMetricsSink } from '@/engine/metrics'
+import { installAllowlist } from './allowlist'
+import { readManaged, resolveManaged, UNMANAGED, type Resolved } from './managed'
+import {
+  loadSession,
+  pseudonymsFrom,
+  recordSubstitutions,
+  sessionKeyFrom,
+  watchTabs,
+} from './hydration'
+import { LocalSource } from '@/metrics/localSource'
+import type { OffscreenAttachmentRequest } from './offscreen'
+import {
+  evaluate,
+  getPolicy,
+  registerPolicy,
+  unavailableOutcome,
+} from '@/engine/policy'
 import { sanitize } from '@/engine/sanitize'
 import { runtime } from './browser'
 import { APP_ORIGIN } from './config'
@@ -15,6 +32,8 @@ import {
   type HandoffRequest,
   type HandoffResponse,
   type Metrics,
+  type AttachmentRequest,
+  type AttachmentResponse,
   type Request,
   type Response,
   type SanitizeRequest,
@@ -58,6 +77,52 @@ const LATENCY_SAMPLES = 200
 
 const metrics: Metrics = { ...EMPTY_METRICS, latencies: [] }
 
+/**
+ * Performance metrics for the escalation path, on this device only.
+ *
+ * The counters above are the popup's; this is the envelope the console reads.
+ * IndexedDB rather than the worker's memory because a service worker is
+ * evicted after thirty seconds idle, and a metric that dies with the worker
+ * cannot answer "what does the cold start cost our users".
+ *
+ * A short buffer window still loses the last few events to an eviction. That
+ * is an accepted gap rather than an unknown one: percentiles over a session
+ * survive it, and paying a synchronous write per escalation to close it would
+ * put storage latency on the path being measured.
+ */
+registerMetricsSink(new LocalSource())
+
+/**
+ * The user's allowlist, if they have one.
+ *
+ * Fire and forget: it resolves before any realistic first prompt, and until it
+ * does the engine suppresses nothing — which is the safe direction, and the
+ * default anyway.
+ */
+/**
+ * Enterprise configuration, resolved once at startup.
+ *
+ * Held here rather than re-read per message: `storage.managed` is a policy
+ * push, not a hot value, and a worker that re-reads it on every keystroke is
+ * paying for something that changes at most daily.
+ *
+ * `configured` is what the content script and the popup await. Until it
+ * settles the defaults apply, which is the conservative direction.
+ */
+let managed: Resolved = UNMANAGED
+
+const configured = (async () => {
+  managed = resolveManaged(await readManaged())
+  registerPolicy(managed.policy)
+  await installAllowlist(managed)
+})()
+
+void configured
+
+// Drop a conversation's stand-ins when its tab closes. They are the only place
+// the user's real names are held.
+watchTabs()
+
 function record(ms: number) {
   metrics.latencies.push(ms)
   if (metrics.latencies.length > LATENCY_SAMPLES) metrics.latencies.shift()
@@ -75,7 +140,7 @@ function check(request: CheckRequest): CheckResponse {
   const started = performance.now()
 
   if (request.text.length > MAX_TEXT_BYTES) {
-    const outcome = unavailableOutcome(DEFAULT_POLICY)
+    const outcome = unavailableOutcome(getPolicy())
     return {
       type: 'checked',
       decision: outcome.decision,
@@ -88,7 +153,7 @@ function check(request: CheckRequest): CheckResponse {
   }
 
   const result = scan(request.text)
-  const outcome = evaluate(result, DEFAULT_POLICY)
+  const outcome = evaluate(result, getPolicy())
   const ms = performance.now() - started
 
   metrics.checked += 1
@@ -209,14 +274,34 @@ async function deepCheck(request: DeepCheckRequest): Promise<DeepCheckResponse> 
  * all. `deep` re-runs the escalation first so the cleanup acts on the findings
  * the user was actually shown, rather than silently reverting to stage one's.
  */
-async function clean(request: SanitizeRequest): Promise<SanitizeResponse> {
+async function clean(
+  request: SanitizeRequest,
+  sessionId: string | null,
+): Promise<SanitizeResponse> {
   const started = performance.now()
   const result = request.deep
-    ? await scanWithConfirmation(request.text)
+    ? await scanWithConfirmation(request.text, { phase: 'banner' })
     : scan(request.text)
+
+  /**
+   * Stand-ins already handed out in this conversation.
+   *
+   * Without this, turn two calls the same person something different and the
+   * model loses track of who is who — which is the entire reason nickname mode
+   * exists. Loaded from `storage.session` rather than worker memory because
+   * the worker is evicted between turns.
+   */
+  const carry = sessionId ? pseudonymsFrom(await loadSession(sessionId)) : undefined
+
   const cleaned = sanitize(request.text, result.findings, {
     mode: request.mode ?? 'redact',
+    carry,
   })
+
+  // Recorded so the model's answer can be put back into the user's own words.
+  // Fire and forget: a lost mapping costs a manual find-and-replace, and must
+  // not cost them the cleaning itself.
+  if (sessionId) void recordSubstitutions(sessionId, cleaned.replacements)
 
   metrics.sanitized += 1
   const ms = performance.now() - started
@@ -274,7 +359,7 @@ function status(): StatusResponse {
 
 /** The reply a caller gets when the engine itself threw. Never a clean bill. */
 function failed(cause: unknown): CheckResponse {
-  const outcome = unavailableOutcome(DEFAULT_POLICY)
+  const outcome = unavailableOutcome(getPolicy())
   return {
     type: 'checked',
     decision: outcome.decision,
@@ -286,8 +371,62 @@ function failed(cause: unknown): CheckResponse {
   }
 }
 
+/**
+ * An attachment, relayed to where the parsers live.
+ *
+ * The worker does not read the file itself: `extract.ts` pulls in `xlsx`,
+ * `jszip` and `pdfjs-dist`, and a service worker is woken constantly, so
+ * parsing 3 MB of parser on every wake to serve the rare attachment is the
+ * wrong trade. The offscreen document is created on demand and outlives the
+ * worker, which is where that weight belongs.
+ *
+ * Firefox has no offscreen API, so there it says so rather than guessing. An
+ * attachment that could not be read is reported as unread — never as clean.
+ */
+async function attachment(request: AttachmentRequest): Promise<AttachmentResponse> {
+  const unavailable = (why: string): AttachmentResponse => ({
+    type: 'attachment-checked',
+    decision: 'warn',
+    headline: `Could not check ${request.name}`,
+    summary: why,
+    findings: [],
+    ms: 0,
+    unreadable: why,
+  })
+
+  if (!(await ensureOffscreen())) {
+    return unavailable('this browser cannot read attachments in the extension')
+  }
+
+  const message: OffscreenAttachmentRequest = { type: 'offscreen-attachment', request }
+  const relayed = await new Promise<AttachmentResponse | null>((resolve) => {
+    try {
+      const returned = runtime.runtime.sendMessage(
+        message,
+        (response: AttachmentResponse) => {
+          resolve(runtime.runtime.lastError ? null : (response ?? null))
+        },
+      ) as unknown as Promise<AttachmentResponse> | undefined
+      if (typeof returned?.then === 'function') {
+        returned.then((response) => resolve(response ?? null), () => resolve(null))
+      }
+    } catch {
+      resolve(null)
+    }
+  })
+
+  if (!relayed) return unavailable('the attachment reader did not respond')
+
+  metrics.checked += 1
+  if (relayed.decision === 'warn') metrics.warned += 1
+  if (relayed.decision === 'block') metrics.blocked += 1
+  if (relayed.cleaned) metrics.sanitized += 1
+
+  return relayed
+}
+
 runtime.runtime.onMessage.addListener(
-  (message: Request, _sender, sendResponse: (r: Response) => void) => {
+  (message: Request, sender, sendResponse: (r: Response) => void) => {
     // Stage one and status answer synchronously — that is the whole point of
     // stage one, and holding the port open for them would add a round trip to
     // the path that has to stay instant.
@@ -298,6 +437,16 @@ runtime.runtime.onMessage.addListener(
           return false
         case 'status':
           sendResponse(status())
+          return false
+        case 'config':
+          // Synchronous: the content script asks once at load and must not
+          // wait on a round trip before it can decide whether to hold a send.
+          sendResponse({
+            type: 'config',
+            observeOnly: managed.observeOnly,
+            managed: managed.managed,
+            allowUserOverrides: managed.allowUserOverrides,
+          })
           return false
         default:
           break
@@ -314,10 +463,12 @@ runtime.runtime.onMessage.addListener(
       message?.type === 'deep-check'
         ? deepCheck(message)
         : message?.type === 'sanitize'
-          ? clean(message)
+          ? clean(message, sessionKeyFrom(sender))
           : message?.type === 'handoff'
             ? handoff(message)
-            : message?.type === 'take-handoff'
+            : message?.type === 'attachment'
+          ? attachment(message)
+          : message?.type === 'take-handoff'
               ? takeHandoff().then(
                   (text): Response => ({ type: 'handoff-text', text }),
                 )

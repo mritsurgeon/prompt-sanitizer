@@ -21,3 +21,46 @@ dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
   margin: 16px 0 0; padding-top: 12px; border-top: 1px solid #232933;
   font-size: 11.5px; color: #6d7787; line-height: 1.5;
 }
+
+/* --- hydration panel -----------------------------------------------------
+   Shown only when this conversation has stand-ins that can be put back.
+   Silence is the normal case here as everywhere else. */
+#hydration {
+  margin: 16px 0 0; padding-top: 12px; border-top: 1px solid #232933;
+}
+.hy-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+}
+.hy-title { font-size: 12.5px; font-weight: 600; }
+.hy-count {
+  font-size: 11px; color: #98a2b3; font-variant-numeric: tabular-nums;
+}
+.hy-hint { margin: 6px 0 0; font-size: 11.5px; color: #6d7787; line-height: 1.45; }
+.hy-field {
+  width: 100%; box-sizing: border-box; margin-top: 8px; padding: 7px 8px;
+  min-height: 58px; resize: vertical;
+  background: #11151b; color: #eef1f6;
+  border: 1px solid #232933; border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+  line-height: 1.45;
+}
+.hy-field:focus { outline: none; border-color: #3d6ae0; }
+.hy-field[readonly] { background: #0d1116; color: #cfd6e0; }
+.hy-button {
+  width: 100%; margin-top: 8px; padding: 7px 10px;
+  background: #3d6ae0; color: #fff;
+  border: 0; border-radius: 6px;
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.hy-button:hover { background: #4a76e8; }
+.hy-button:disabled { background: #232933; color: #6d7787; cursor: default; }
+.hy-status { margin: 8px 0 0; font-size: 11.5px; color: #3ad57f; }
+.hy-status.none { color: #98a2b3; }
+
+/* An organisation is pushing the configuration. Said plainly, rather than
+   leaving somebody to wonder why a setting will not stick. */
+.managed {
+  margin: 12px 0 0; padding: 6px 8px;
+  background: #1b2330; border: 1px solid #26344a; border-radius: 6px;
+  font-size: 11.5px; color: #9fb4d4; line-height: 1.4;
+}

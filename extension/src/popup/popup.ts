@@ -1,5 +1,6 @@
 import { runtime } from '../browser'
-import type { StatusResponse } from '../protocol'
+import type { ConfigResponse, StatusResponse } from '../protocol'
+import { renderHydration } from './hydrationView'
 
 /**
  * Status only. The popup cannot be opened programmatically, so it is never the
@@ -12,6 +13,34 @@ const percentile = (values: number[], p: number): number => {
   const sorted = [...values].sort((a, b) => a - b)
   return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))]
 }
+
+/**
+ * The hydration panel, rendered independently of the status call.
+ *
+ * Its own await chain on purpose: a worker that has died still leaves the
+ * stand-ins readable in `storage.session`, and somebody who needs their names
+ * back should get them even while the status line says the checker is
+ * unavailable.
+ */
+const panel = document.getElementById('hydration')
+if (panel) void renderHydration(panel)
+
+/**
+ * Managed badge.
+ *
+ * Worth saying plainly rather than leaving somebody to wonder why a setting
+ * will not stick: if an organisation is pushing the configuration, the user
+ * should be told, and told whether it is enforcing or only watching.
+ */
+runtime.runtime.sendMessage({ type: 'config' }, (config: ConfigResponse) => {
+  if (runtime.runtime.lastError || !config?.managed) return
+  const note = document.getElementById('managed')
+  if (!note) return
+  note.textContent = config.observeOnly
+    ? 'Managed by your organisation · audit mode, nothing is blocked'
+    : 'Managed by your organisation'
+  note.hidden = false
+})
 
 runtime.runtime.sendMessage({ type: 'status' }, (status: StatusResponse) => {
   const state = document.getElementById('state')

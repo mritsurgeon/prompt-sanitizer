@@ -120,6 +120,9 @@ export default function App() {
           sheetNames: file?.sheetNames,
         },
         structuralDelimiter: file?.structuralDelimiter,
+        // A dropped file and a pasted prompt are watched differently and have
+        // different budgets, so they are recorded apart.
+        phase: file ? 'file' : 'overlay',
       })
 
       setScannedText(text)

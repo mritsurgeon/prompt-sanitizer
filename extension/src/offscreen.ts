@@ -2,8 +2,10 @@ import { registerLocalModel } from '@/engine/confirm'
 import { createGlinerConfirmer } from '@/engine/confirm/gliner'
 import { runtime } from './browser'
 import { APP_ORIGIN } from './config'
+import { installAllowlist } from './allowlist'
+import { reviewAttachment } from './attachment'
 import { runDeepCheck } from './deep'
-import type { DeepCheckResponse } from './protocol'
+import type { AttachmentRequest, AttachmentResponse, DeepCheckResponse } from './protocol'
 
 /**
  * Stage two's host — where GLiNER runs.
@@ -54,10 +56,52 @@ registerLocalModel(
   }),
 )
 
+// Attachments are scanned here, so this context needs the allowlist too — a
+// document full of the user's own signature should be no noisier than a prompt.
+void installAllowlist()
+
 export interface OffscreenDeepRequest {
   type: 'offscreen-deep-check'
   text: string
 }
+
+/**
+ * An attachment to read.
+ *
+ * Relayed here rather than handled in the worker because the parsers live
+ * here — see `attachment.ts` for the 3.2 MB measurement that decided it.
+ */
+export interface OffscreenAttachmentRequest {
+  type: 'offscreen-attachment'
+  request: AttachmentRequest
+}
+
+runtime.runtime.onMessage.addListener(
+  (
+    message: OffscreenAttachmentRequest,
+    _sender,
+    sendResponse: (r: AttachmentResponse) => void,
+  ) => {
+    if (message?.type !== 'offscreen-attachment') return false
+
+    reviewAttachment(message.request).then(sendResponse, (cause) =>
+      sendResponse({
+        type: 'attachment-checked',
+        decision: 'warn',
+        headline: `Could not check ${message.request.name}`,
+        summary: '',
+        findings: [],
+        ms: 0,
+        unreadable:
+          cause instanceof Error ? cause.message : 'that file could not be read',
+      }),
+    )
+
+    // Held open: parsing a spreadsheet takes far longer than the synchronous
+    // reply Chrome would otherwise expect.
+    return true
+  },
+)
 
 runtime.runtime.onMessage.addListener(
   (

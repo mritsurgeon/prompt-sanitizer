@@ -1,6 +1,6 @@
 import { category } from '@/engine/categories'
 import { scan, scanWithConfirmation } from '@/engine/detect'
-import { DEFAULT_POLICY, evaluate } from '@/engine/policy'
+import { evaluate, getPolicy } from '@/engine/policy'
 import { previewReplacement } from '@/engine/sanitize'
 import type { Finding } from '@/engine/types'
 import type { DeepCheckResponse, WireFinding } from './protocol'
@@ -41,11 +41,13 @@ export function toWire(finding: Finding): WireFinding {
 export async function runDeepCheck(text: string): Promise<DeepCheckResponse> {
   const started = performance.now()
   const shallow = scan(text)
-  const before = evaluate(shallow, DEFAULT_POLICY)
+  const before = evaluate(shallow, getPolicy())
 
   try {
-    const deep = await scanWithConfirmation(text)
-    const after = evaluate(deep, DEFAULT_POLICY)
+    // Stage two by definition: the banner is already on screen and nobody is
+    // waiting on this, which is why its latency budget is generous.
+    const deep = await scanWithConfirmation(text, { phase: 'banner' })
+    const after = evaluate(deep, getPolicy())
 
     // Compared by position and value rather than by id: escalation rebuilds
     // findings, so ids do not survive it and comparing them would report every

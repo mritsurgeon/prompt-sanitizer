@@ -10,7 +10,7 @@ import type { Decision } from '@/engine/policy'
  * data with no behaviour attached.
  */
 
-export type CheckReason = 'paste' | 'submit' | 'manual'
+export type CheckReason = 'paste' | 'submit' | 'file' | 'manual'
 
 export interface CheckRequest {
   type: 'check'
@@ -142,7 +142,67 @@ export interface TakeHandoffResponse {
   text: string | null
 }
 
+/**
+ * An attachment, on its way to be read somewhere that can read it.
+ *
+ * The bytes travel as base64 because MV3 messages are JSON. That is not free —
+ * a 5 MB spreadsheet crosses as a 6.7 MB string — so `MAX_ATTACHMENT_BYTES`
+ * caps it, and anything larger is announced as unchecked rather than allowed
+ * to exhaust the tab.
+ */
+export interface AttachmentRequest {
+  type: 'attachment'
+  /** Used for the extension check and as document metadata for the scan. */
+  name: string
+  bytes: string
+  host: string
+  /**
+   * Set to rewrite the file rather than only judge it. Sent as a second
+   * request after the user asks for it, so the common case — look, decide,
+   * deliver — moves the bytes once.
+   */
+  mode?: 'redact' | 'pseudonymize'
+}
+
+export interface AttachmentResponse {
+  type: 'attachment-checked'
+  decision: Decision
+  headline: string
+  summary: string
+  findings: WireFinding[]
+  ms: number
+  /** Present when `mode` was set and the rewrite succeeded. */
+  cleaned?: { bytes: string; name: string }
+  /**
+   * Present when the file could not be read at all — an unsupported format,
+   * a corrupt document, or a browser with no offscreen document. Distinct from
+   * a clean result on purpose.
+   */
+  unreadable?: string
+}
+
+/**
+ * What the page and the popup need to know about how this browser is
+ * configured. Carries no policy detail — only what changes behaviour on the
+ * page — because the content script contains no judgement and should not be
+ * handed the means to acquire any.
+ */
+export interface ConfigRequest {
+  type: 'config'
+}
+
+export interface ConfigResponse {
+  type: 'config'
+  /** Nothing this policy decides would interrupt anybody. */
+  observeOnly: boolean
+  /** An organisation is pushing the configuration. */
+  managed: boolean
+  allowUserOverrides: boolean
+}
+
 export type Request =
+  | AttachmentRequest
+  | ConfigRequest
   | CheckRequest
   | DeepCheckRequest
   | SanitizeRequest
@@ -151,6 +211,8 @@ export type Request =
   | TakeHandoffRequest
 
 export type Response =
+  | AttachmentResponse
+  | ConfigResponse
   | CheckResponse
   | DeepCheckResponse
   | SanitizeResponse

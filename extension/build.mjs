@@ -61,6 +61,10 @@ const BASE = {
   // travels through session storage rather than the URL, so it never reaches
   // history or the omnibox.
   permissions: ['storage', 'tabs'],
+  // Registers the enterprise policy template. Chromium reads this to build the
+  // admin-console form and the GPO/plist templates, so the schema is the
+  // documentation an administrator actually sees.
+  storage: { managed_schema: 'managed_schema.json' },
   host_permissions: HOSTS,
   action: {
     default_popup: 'popup/popup.html',
@@ -123,7 +127,7 @@ const MANIFESTS = {
  */
 const ENTRIES = [
   ['background', 'extension/src/background.ts'],
-  ['content', 'extension/src/content.ts'],
+  ['content', 'extension/src/content.entry.ts'],
   ['offscreen', 'extension/src/offscreen.ts'],
   ['popup/popup', 'extension/src/popup/popup.ts'],
 ]
@@ -242,6 +246,11 @@ await writeFile(
   join(out, 'manifest.json'),
   JSON.stringify(MANIFESTS.chrome, null, 2),
 )
+
+// The enterprise policy template, referenced by the `storage.managed_schema`
+// manifest key. Chromium builds the admin-console form and the GPO/plist
+// templates from it, so it has to ship alongside the manifest that names it.
+await cp(join(root, 'extension/managed_schema.json'), join(out, 'managed_schema.json'))
 
 console.log(`\nExtension built into extension/dist`)
 console.log('  Chrome/Edge : load unpacked, pick extension/dist')

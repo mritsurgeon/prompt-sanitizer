@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AI Safe",
+  "description": "Every key maps onto the engine's own vocabulary rather than a parallel one: four data groups, each taking one of three decisions. An unrecognised value is ignored and the default applies, because a policy is pushed by somebody who cannot see the result.",
+  "type": "object",
+  "properties": {
+    "ExecutionMode": {
+      "type": "string",
+      "enum": [
+        "ENFORCE",
+        "OBSERVE_ONLY"
+      ],
+      "default": "ENFORCE",
+      "description": "Base configuration. OBSERVE_ONLY enforces nothing and shows nothing: prompts are still checked and counted on the device, but the send is never held and no banner appears. Use it to measure a rollout before enforcing one. The keys below override whichever base is chosen, so an audit rollout that should still speak up about credentials is OBSERVE_ONLY with Secret set to warn."
+    },
+    "Secret": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "warn",
+        "block"
+      ],
+      "description": "Live credentials: passwords, API keys, access tokens, private keys, connection strings. Defaults to block."
+    },
+    "Personal": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "warn",
+        "block"
+      ],
+      "description": "Personal data: names, email addresses, phone numbers, identity and card numbers. Defaults to warn."
+    },
+    "Confidential": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "warn",
+        "block"
+      ],
+      "description": "Company-confidential material: unreleased plans, pricing, project codenames. Defaults to warn."
+    },
+    "Internal": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "warn",
+        "block"
+      ],
+      "description": "Internal identifiers: hostnames, network paths, customer, case and contract numbers. Defaults to warn."
+    },
+    "UncertainCeiling": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "warn",
+        "block"
+      ],
+      "description": "The strongest response allowed for a finding the engine is not certain about. Defaults to warn, so a possible name can never stop somebody working. Raising this to block is not recommended."
+    },
+    "OnEngineUnavailable": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "warn",
+        "block"
+      ],
+      "description": "What to do when the checker cannot be reached at all. Defaults to warn, because 'we found nothing' and 'we could not look' are different states."
+    },
+    "AllowlistDigests": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Identities that need no warning, as lowercase hex SHA-256 digests of 'SALT VALUE' where VALUE is lowercased and has its whitespace collapsed. Plaintext is never accepted, so a policy file cannot carry a list of employee names. Credentials are never suppressible, whatever is listed here."
+    },
+    "AllowlistDomainDigests": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Internal domains that need no warning, digested the same way. A digest of 'corp.internal' also covers api.corp.internal and anyone@corp.internal."
+    },
+    "AllowlistSalt": {
+      "type": "string",
+      "description": "The salt the digests above were computed with. Required if either list is set: a digest checked against a different salt never matches, and there is no way to detect that from the digest alone."
+    },
+    "AllowUserOverrides": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether a user's own allowlist is honoured alongside this one. Set false to ignore it entirely."
+    }
+  }
+}
