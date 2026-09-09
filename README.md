@@ -33,9 +33,11 @@ Other commands:
 | Command | What it does |
 | --- | --- |
 | `npm run build` | Type-check and produce a static `dist/` |
-| `npm test` | 131 tests: detection, false positives, classification, document sensitivity, escalation, sanitization, documents, performance |
+| `npm test` | 437 tests: detection, false positives, classification, document sensitivity, escalation, metrics, windowing, send interception, sanitization, documents, performance |
 | `npm run check` | Type-check, lint, test, and score the corpus and the sample files |
 | `npm run check:corpus` | Score the labelled corpus and print every false positive and false negative |
+| `npm run corpus:generate` | Generate the labelled document corpus — 745 documents, 1 945 spans, deterministic |
+| `npm run check:documents` | Score it: recall, precision and traps per density band and per evidence family. Add `--gliner`, `--density dense`, `--no-merge`, `--cap N` |
 | `npm run check:heldout -- bench/heldout-ambiguity-2.json` | Score a held-out ambiguity set the engine was **not** tuned against. Add `--gliner` to score it with the model |
 | `npm run provision:model` | Provision the GLiNER weights and the ONNX runtime once (~193 MB) into `public/models/` |
 | `npm run check:perf` | Per-layer and end-to-end latency, plus whether the confirmer was invoked |
@@ -75,11 +77,58 @@ single technique is load-bearing.
 
 | Layer | File | What it catches |
 | --- | --- | --- |
-| 1 — deterministic rules | `src/engine/detectors/patterns.ts` | Emails, phone numbers, IPs, MACs, URLs, UUIDs, card numbers (Luhn-checked), IBANs, ID numbers, AWS / GitHub / Slack / Google / Stripe / model-provider keys, JWTs, bearer tokens, PEM private keys, connection strings, `password = …` assignments |
+| 0 — normalisation | `src/engine/normalise.ts` | Hidden and lookalike characters, before any rule runs |
+| 1 — deterministic rules | `src/engine/detectors/patterns.ts` | Emails, phone numbers, IPs, MACs, URLs, UUIDs, card numbers (Luhn-checked), IBANs, ID numbers, AWS / GitHub / Slack / Google / Stripe / model-provider keys, JWTs, bearer tokens, PEM private keys, connection strings, `password = …` and `api_key = …` assignments |
+| 1b — randomness | `src/engine/entropy.ts` | Decides whether a value in a secret-shaped position is actually opaque |
 | 2a — candidate generation | `src/engine/detectors/entities.ts` | Proposes people, companies, places and street addresses |
 | 2b — **context and confidence** | `src/engine/context.ts` | Decides whether the surrounding language actually supports each candidate |
 | 3 — business patterns | `src/engine/detectors/business.ts` | Internal server and domain names, network shares, customer / case / contract / employee numbers, licence keys |
 | 3b — company confidential | `src/engine/detectors/confidential.ts` | Internal project names, unreleased release dates, pricing and margin terms |
+
+### Layer 0: the characters have to be the characters
+
+Layer 1 matches exact characters, so anything that changes the characters
+without changing what a person reads defeats it in silence. Most of that is not
+an attack:
+
+- a phone number carrying non-breaking spaces, pasted out of a web page;
+- soft hyphens left mid-word by PDF extraction;
+- full-width digits from a CJK keyboard;
+- curly quotes and en dashes from a word processor, inside a connection string
+  or around a password.
+
+And some of it is: one Cyrillic `а` in `jirа.acme.internal` is invisible on
+screen and makes the hostname rule miss.
+
+So the text is normalised before any detector sees it — NFKC, then zero-width
+and soft hyphens removed, then script confusables folded to their ASCII
+lookalike.
+
+**Most of the work is NFKC's, which is worth knowing before writing a fold
+table.** Measured: NFKC already handles full-width digits and letters,
+mathematical alphanumerics (`𝐀` → `A`), non-breaking and narrow spaces,
+ligatures (`ﬁ` → `fi`) and combining-mark composition. The obvious first draft
+of a confusables table lists all of those, and every one of those entries is
+dead weight. What NFKC leaves alone — and what the table therefore contains —
+is zero-width characters, soft hyphens, dashes, curly quotes, and Cyrillic and
+Greek lookalikes.
+
+**Findings still point at the user's own document.** Detection runs on the
+normalised text, but the sanitizer rewrites the real file, the highlighter draws
+on it, and the Word writer maps offsets into runs — so every finding is
+projected back. That is not an offset shift: normalisation changes lengths in
+both directions (`ﬁ` is one character that becomes two, `é` can be two that
+become one, a zero-width space is one that becomes none), so each normalised
+character records the range of original characters it came from. Tests assert
+the invariant directly — `raw.slice(finding.start, finding.end) === finding.value`
+for every finding — because a finding that is shown and then silently fails to
+be removed is worse than one that was never found.
+
+Normalisation is also **not** a per-character operation: NFKC composes across
+combining sequences, so `e` + `U+0301` is two characters that become one, and a
+character-at-a-time loop does not implement NFKC. Iteration is by grapheme
+cluster. ASCII text takes a fast path that skips all of it, which is why the
+291 KB benchmark is unchanged at 223 ms.
 
 Layers 1, 2a, 3 and 3b only ever *propose*. They emit a `Candidate` with a
 `base` score reflecting what the gazetteers and regexes know, and nothing else.
@@ -430,6 +479,51 @@ the only way anything leaves. No MiniLM or DistilBERT classifier has been
 added, deliberately — a generic sensitivity classifier with no representative
 training data would produce confident-looking noise.
 
+## The allowlist
+
+A user's own name and email appear in almost everything they write — a
+signature, a reply-all, their own address in a header. Warning about them on
+every prompt is the fastest route to somebody switching the extension off, and
+an extension that is off protects nothing. So `src/engine/allowlist/` suppresses
+identities the user has said they do not need warning about: exact values, and
+domain suffixes (allowing `corp.internal` covers `api.corp.internal` and
+`someone@corp.internal`).
+
+Three things about it are load-bearing.
+
+**It runs at the candidate stage**, before anything reads the candidates —
+not as a filter over findings at the end. Candidates feed the classifier, the
+document-sensitivity assessment (which counts how many distinct companies a
+document names), entity consistency, and the recoverable budget. A user's own
+employer being named is not evidence that a document is confidential, so a
+suppressed identity should be absent from all of it rather than removed at the
+end having already voted. There is a test asserting exactly that: three
+companies raise the `customer-list` signal, and suppressing one drops it below
+the threshold.
+
+**An allowlist can never silence a credential.** Whatever somebody puts in it,
+nothing in the `secret` group is suppressible — a credential is not a matter of
+personal preference, and an allowlist that could silence one is a footgun
+pointed at the thing this tool exists to prevent. Enforced in the engine rather
+than trusted to the caller, and tested.
+
+**Only digests are stored**, salted, so an exported settings file or a
+fleet-wide policy does not carry a list of employee names. Being precise about
+what that buys: not much on the device itself — a user's own name is already in
+their browser profile and their mail client — but a settings export leaves the
+machine, and that is the case worth covering. Domain suffixes are hashed too,
+by decomposing a candidate hostname into its own suffixes and hashing each;
+a suffix test cannot be run against a hash.
+
+Matching is on a candidate's whole value and never a substring, so allowlisting
+`Acme` cannot silence `jira.acme.internal` — those are different candidates.
+Unconfigured it costs one set-size check for the whole scan; configured, a
+realistic prompt measures 0.21 ms either way.
+
+There is no settings UI yet. The engine seam and the storage shape are what the
+managed-policy work needs to build against, so today it is populated by hand or
+by policy.
+
 ### Adding a rule
 
 Most additions are data, not code. To teach it your company's ticket format:
@@ -719,15 +813,88 @@ thing crossing an origin is a `fetch` for the weight file.
 
 ### What it watches
 
-Two moments, and nothing else:
+Three moments, and nothing else:
 
 | | |
 | --- | --- |
 | **Paste** | Warns. Never blocks — holding the clipboard hostage over a check that is usually clean is not worth it. |
 | **Submit** | Holds the send, checks, then allows or stops it. This is the boundary that matters. |
+| **Attach** | Holds a drop or a file picker, checks, then delivers, substitutes a cleaned copy, or withholds it. |
+
+Attachments are held rather than warned about, unlike a paste: once the page has
+the `File` it can upload it, and there is no taking it back.
+
+**Extraction does not happen in the content script**, and the reason is worth
+recording. `src/files/extract.ts` lazily imports `xlsx`, `jszip` and
+`pdfjs-dist`, but a content script is injected as a classic script, so those
+dynamic imports inline rather than split — pulling it in takes the content
+bundle from **17.7 KB to 3.2 MB**, on every ChatGPT, Claude, Gemini and Copilot
+page load, whether or not anybody ever attaches anything.
+
+So the content script reads what costs nothing to read — `.txt` `.md` `.log`
+`.json` `.csv` `.tsv` via `file.text()` — and hands Word, Excel and PDF
+documents to the offscreen document, which already carries weight for the
+model, is created on demand rather than per page, and is a real ES module that
+code-splits. The bytes cross as base64, because MV3 messages are serialised
+through JSON and an `ArrayBuffer` arrives as `{}`.
+
+| | size |
+| --- | --- |
+| `content.js` (every AI page load) | **23 KB** |
+| `offscreen.js` (on demand) | 117 KB |
+| `xlsx`, `pdf`, `jszip` chunks | 3.0 MB, loaded only when a document is opened |
+
+A cleaned document is rewritten by the same writer the app uses, so a
+spreadsheet keeps its sheets, widths, formats and merges, and a Word file keeps
+its runs byte-identical outside the replacements. The tests re-open the
+rewritten file and re-scan it, because a finding that is shown and then
+survives cleaning is worse than one that was never found.
+
+Two limits worth stating: attachments over 10 MB are announced as unchecked
+rather than copied through memory three times, and Firefox has no offscreen
+API, so documents there are reported as unread — never as clean.
 
 No keystroke scanning, no mutation observers, no polling. Typing with the
 extension installed is byte-for-byte the same as typing without it.
+
+### Enterprise deployment
+
+`extension/managed_schema.json` registers the policy template Chromium uses to
+build the admin-console form and the GPO and plist templates, so a security team
+configures this through the tools they already use — no accounts, no server, and
+still nothing leaving the device.
+
+**The schema uses the engine's own vocabulary**, and that is the whole design.
+`src/engine/policy.ts` already names four groups — secret, personal,
+confidential, internal — each taking one of three decisions. So a managed key
+maps onto one by assignment, not by translation. A schema with its own words
+would have to be translated somewhere, and that translation is where a schema
+and an engine drift apart until nobody can say what an administrator's policy
+actually did.
+
+| key | effect |
+| --- | --- |
+| `ExecutionMode` | `ENFORCE` or `OBSERVE_ONLY` — the base the rest overrides |
+| `Secret` `Personal` `Confidential` `Internal` | `allow`, `warn` or `block` per group |
+| `UncertainCeiling` | the strongest response allowed for an uncertain finding |
+| `OnEngineUnavailable` | what to do when the checker cannot be reached |
+| `AllowlistDigests` `AllowlistDomainDigests` `AllowlistSalt` | a fleet-wide allowlist, as digests only |
+| `AllowUserOverrides` | whether a user's own allowlist is honoured too |
+
+`OBSERVE_ONLY` really does nothing: the send is not held, no banner appears,
+and the page is not touched — the content script learns the mode once at load
+precisely so it can skip holding the send, because holding a keystroke and then
+releasing it is still holding it. An audit rollout that should still speak up
+about credentials composes from the two: `OBSERVE_ONLY` with `Secret: warn`.
+
+Two things a policy cannot do. It cannot make a credential suppressible — the
+allowlist refuses the `secret` group whatever is listed. And a value it does
+not recognise is ignored rather than coerced, because a policy is pushed by
+somebody who cannot see the result, so a typo has to degrade to the default and
+never to `allow`.
+
+A managed browser says so in the popup, including whether it is enforcing or
+only watching.
 
 ### Decisions come from policy, not from the browser
 
@@ -778,6 +945,40 @@ roughly 0.1–1 ms on top. These are stage-one figures, which is what determines
 whether the extension is felt at all — stage two runs behind a banner that is
 already on screen, so its cost is spent against time that was going to pass
 anyway.
+
+### Putting the real names back
+
+Cleaning a prompt solves half a problem and creates the other half. Mask the
+names, ask the model to draft a reply, and it answers about `Person_001` and
+`Person_002` — which the user then repairs by hand, and learns not to clean
+anything.
+
+So the stand-ins are remembered for the length of a conversation, and the
+extension popup will put them back. Paste the assistant's reply, press
+**Restore**, and the text comes back in the user's own words. Locally: the
+mappings never leave the device and there is no request involved.
+
+**Only nickname mode is reversible, which is the opposite of how it looks.**
+Placeholders seem like the safe thing to invert because `[EMAIL]` is
+unmistakable — and they are the one mode that cannot be, because every address
+in a document becomes the *same* `[EMAIL]`. Nickname mode (`Email_001`) is
+reversible precisely because its stand-ins are unique. A token claimed by two
+different values is marked ambiguous and refused, so redact mode degrades to
+"nothing to restore" rather than to a confident wrong answer.
+
+**A credential never comes back.** Passwords, keys and tokens are removed
+rather than substituted, and the point of removing one is that it stops
+existing in the conversation. Enforced against the category table, not against
+the category's name — `PASSWORD`, `ACCESS_TOKEN` and `CONNECTION_STRING`
+contain neither the word "secret" nor "key".
+
+Two things about where this lives. The mappings are held in
+`chrome.storage.session` — RAM only, never written to disk, gone when the
+browser closes, and dropped for a tab the moment that tab is closed. And the
+popup is the only surface: intercepting the native copy button would mean the
+extension started *reading model responses*, which is a different product from
+one that watches three user-initiated moments, and injecting a button into the
+assistant's message would mean mutating a React tree we do not own.
 
 ### Site adapters are three fields
 
