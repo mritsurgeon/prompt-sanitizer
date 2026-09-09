@@ -187,11 +187,36 @@ export interface Replacement {
   end: number
 }
 
+/**
+ * Stand-in assignments, carried between sanitizations.
+ *
+ * A multi-turn conversation has to reuse its stand-ins: if turn one mapped
+ * `Jane Doe` to `Person_001`, turn two must say `Person_001` again or the model
+ * loses track of who is who — which is the whole reason nickname mode exists.
+ * Carrying the counters matters as much as carrying the assignments: without
+ * them, turn two starts counting at one again and a second person is handed a
+ * stand-in that already belongs to somebody.
+ */
+export interface Pseudonyms {
+  /** `${category}::${normalised value}` -> stand-in. */
+  assigned: Map<string, string>
+  /** Every stand-in handed out, so a synthetic one never collides. */
+  used: Set<string>
+  /** Next index per category, for nickname mode. */
+  counters: Map<CategoryId, number>
+}
+
 export interface SanitizeResult {
   text: string
   replacements: Replacement[]
   /** original value -> replacement. Used to rewrite files cell-by-cell. */
   valueMap: Map<string, string>
+  /**
+   * The assignments after this pass, for the caller to hand back on the next
+   * one. A fresh object each time rather than the input mutated, so a caller
+   * that discards the result has not already changed its own state.
+   */
+  pseudonyms: Pseudonyms
 }
 
 /** A detector is any function that turns text into candidates. Add more freely. */

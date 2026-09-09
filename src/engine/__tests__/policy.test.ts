@@ -65,14 +65,26 @@ describe('uncertainty never blocks', () => {
 })
 
 describe('policy is configuration, not code', () => {
-  it('observe-only never interrupts', () => {
+  it('observe-only really never interrupts, credentials included', () => {
     const outcome = decide(
       'key sk-live-9d8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b for Sarah Mitchell',
       OBSERVE_ONLY,
     )
-    expect(outcome.decision).toBe('warn')
-    // Still reports what it saw, even while enforcing almost nothing.
+    // A mode called "observe only" that still shows a banner for a credential
+    // is misnamed, and the surprise costs more than the warning gains.
+    expect(outcome.decision).toBe('allow')
+    // Still reports what it saw, which is the entire point of the mode.
     expect(outcome.findings.length).toBeGreaterThan(0)
+  })
+
+  it('composes an audit rollout that still speaks up about credentials', () => {
+    // The reasonable middle, and it needs no third mode: a base plus one
+    // override says exactly what it does.
+    const auditButWarn = { ...OBSERVE_ONLY, secret: 'warn' as const }
+    expect(decide('key sk-live-9d8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b', auditButWarn).decision).toBe(
+      'warn',
+    )
+    expect(decide('Email sarah.mitchell@example.com', auditButWarn).decision).toBe('allow')
   })
 
   it('takes the strongest decision across all findings', () => {

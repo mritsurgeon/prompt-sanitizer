@@ -1,6 +1,7 @@
 import { category } from './categories'
 import type {
   CategoryId,
+  Pseudonyms,
   Finding,
   Replacement,
   SanitizeMode,
@@ -135,6 +136,15 @@ function synthetic(id: CategoryId, value: string, bump: number): string {
 
 export interface SanitizeOptions {
   mode: SanitizeMode
+  /**
+   * Stand-ins already assigned earlier in this conversation. Reusing them is
+   * what keeps `Person_001` the same person across turns.
+   */
+  carry?: Pseudonyms
+}
+
+export function emptyPseudonyms(): Pseudonyms {
+  return { assigned: new Map(), used: new Set(), counters: new Map() }
 }
 
 /**
@@ -148,15 +158,17 @@ export interface SanitizeOptions {
 export function sanitize(
   text: string,
   findings: Finding[],
-  { mode }: SanitizeOptions,
+  { mode, carry }: SanitizeOptions,
 ): SanitizeResult {
   const active = findings
     .filter((f) => f.enabled)
     .sort((a, b) => a.start - b.start)
 
-  const assigned = new Map<string, string>()
-  const used = new Set<string>()
-  const counters = new Map<CategoryId, number>()
+  // Copied, not aliased: a caller that throws away this result must not find
+  // its own carried state already modified.
+  const assigned = new Map<string, string>(carry?.assigned)
+  const used = new Set<string>(carry?.used)
+  const counters = new Map<CategoryId, number>(carry?.counters)
 
   const replacementFor = (finding: Finding): string => {
     const meta = category(finding.category)
@@ -211,7 +223,12 @@ export function sanitize(
 
   out += text.slice(cursor)
 
-  return { text: out, replacements, valueMap }
+  return {
+    text: out,
+    replacements,
+    valueMap,
+    pseudonyms: { assigned, used, counters },
+  }
 }
 
 /** Used by the details list: "john@acme.com → [EMAIL]". */

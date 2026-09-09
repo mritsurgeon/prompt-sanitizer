@@ -59,9 +59,45 @@ export const DEFAULT_POLICY: Policy = {
   onEngineUnavailable: 'warn',
 }
 
-/** Nothing is enforced; useful for observing what a policy *would* do. */
+/**
+ * Registry for the active policy.
+ *
+ * Same shape as the confirmer, the metrics sink and the allowlist next door:
+ * exactly one is active, the default is the conservative one, and a managed
+ * policy replaces it at startup without any engine file changing.
+ *
+ * Registered rather than passed, because five call sites across the worker,
+ * the offscreen document and the two-stage comparison all have to agree — and
+ * an argument that has to be threaded through every one of them is an argument
+ * that will eventually be forgotten at one.
+ */
+let activePolicy: Policy
+
+export function registerPolicy(policy: Policy): void {
+  activePolicy = policy
+}
+
+export function getPolicy(): Policy {
+  return activePolicy
+}
+
+export function resetPolicy(): void {
+  activePolicy = DEFAULT_POLICY
+}
+
+/**
+ * Nothing is enforced and nothing is shown. For measuring a rollout.
+ *
+ * Every group allows, including secrets — because a mode called "observe
+ * only" that still puts a banner up for credentials is misnamed, and the
+ * surprise costs more than the warning gains. An organisation that wants an
+ * audit rollout which still speaks up about credentials — a reasonable and
+ * probably common wish — composes it: `ExecutionMode: OBSERVE_ONLY` with
+ * `Secret: warn`. That is what a base plus per-group overrides is for, and it
+ * says exactly what it does.
+ */
 export const OBSERVE_ONLY: Policy = {
-  secret: 'warn',
+  secret: 'allow',
   personal: 'allow',
   confidential: 'allow',
   internal: 'allow',
@@ -195,3 +231,5 @@ export function unavailableOutcome(
     summary: 'the checker did not respond',
   }
 }
+
+resetPolicy()
