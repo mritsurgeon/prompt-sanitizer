@@ -74,8 +74,25 @@ const BASE = {
     {
       matches: HOSTS,
       js: ['content.js'],
-      run_at: 'document_idle',
-      all_frames: false,
+      /**
+       * `document_start`, not `document_idle`, and the difference decides
+       * whether interception works at all.
+       *
+       * Listeners on one node in one phase fire in **registration order**,
+       * and that order is world-agnostic — an isolated-world content script
+       * competes with the page's own listeners on equal terms. At
+       * `document_idle` we attach after the page's scripts have run, so any
+       * `drop` or `submit` listener the app registered during init runs
+       * first, and our `stopPropagation` arrives too late to matter. At
+       * `document_start` we are there before the app is.
+       */
+      run_at: 'document_start',
+      /**
+       * Composers do get embedded — Copilot and the Microsoft 365 surfaces
+       * put one in an iframe — and a frame we are not injected into is a
+       * frame with no protection at all, silently.
+       */
+      all_frames: true,
     },
   ],
 }
@@ -94,9 +111,23 @@ const CSP = {
     "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
 }
 
+/**
+ * A build stamp, so "am I running the current build?" is answerable.
+ *
+ * An unpacked extension does not reload when the source changes: Chrome keeps
+ * serving whatever was in `extension/dist` at load time, so a change to
+ * `src/engine` needs `npm run ext:build` *and* a click on Reload. Debugging a
+ * stale load looks exactly like debugging a real bug, and it costs a session
+ * before anybody suspects it — so the popup shows this, and it changes on
+ * every build.
+ */
+const STAMP = new Date().toISOString().slice(0, 16).replace('T', ' ')
+
 const MANIFESTS = {
   chrome: {
     ...BASE,
+    // Chrome-only; Firefox warns on unknown keys, so it stays out of that one.
+    version_name: `${BASE.version} (built ${STAMP})`,
     // `offscreen` gives the second-stage model somewhere to stay resident. A
     // service worker is killed on idle, which would evict 183 MB of weights
     // between one prompt and the next.

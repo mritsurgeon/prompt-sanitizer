@@ -9,6 +9,7 @@ import {
 import { runtime } from './browser'
 import { APP_ORIGINS } from './config'
 import { installFileInterceptors, type FileGuardDeps } from './files'
+import { listenFirst } from './listen'
 import {
   applyDeeper,
   bannerIsDeep,
@@ -213,9 +214,10 @@ async function collectHandoff(): Promise<void> {
   const response = await ask<TakeHandoffResponse>({ type: 'take-handoff' })
   if (!response?.text) return
 
-  // The app mounts asynchronously, so the composer may not exist yet.
+  // The app mounts asynchronously, so the composer may not exist yet — and at
+  // `document_start` neither does `document.body`.
   for (let attempt = 0; attempt < 40; attempt++) {
-    const target = promptNear(document.body)
+    const target = document.body ? promptNear(document.body) : null
     if (target) {
       target.write(response.text)
       target.element.focus()
@@ -432,9 +434,11 @@ export function install(): void {
     }
   })()
 
-  document.addEventListener('paste', onPaste, true)
-  document.addEventListener('keydown', (e) => void intercept(e), true)
-  document.addEventListener('click', (e) => void intercept(e), true)
+  // Registered on `window` and `document` at capture, so this is first in the
+  // propagation path rather than merely early in it — see `listen.ts`.
+  listenFirst('paste', (e) => onPaste(e as ClipboardEvent))
+  listenFirst('keydown', (e) => void intercept(e))
+  listenFirst('click', (e) => void intercept(e))
 
   // Attachments. The composer was never the only way in.
   installFileInterceptors(fileDeps)

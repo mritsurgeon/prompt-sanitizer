@@ -22,6 +22,20 @@ const percentile = (values: number[], p: number): number => {
  * back should get them even while the status line says the checker is
  * unavailable.
  */
+/**
+ * The build stamp.
+ *
+ * An unpacked extension keeps running whatever was in `extension/dist` when it
+ * was loaded, so a rebuilt engine does nothing until Reload is clicked — and a
+ * stale load is indistinguishable from a real bug until somebody thinks to
+ * check. This makes it checkable.
+ */
+const build = document.getElementById('build')
+if (build) {
+  const manifest = runtime.runtime.getManifest() as { version_name?: string; version: string }
+  build.textContent = manifest.version_name ?? manifest.version
+}
+
 const panel = document.getElementById('hydration')
 if (panel) void renderHydration(panel)
 

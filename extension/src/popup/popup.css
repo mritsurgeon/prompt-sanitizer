@@ -64,3 +64,10 @@ dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
   background: #1b2330; border: 1px solid #26344a; border-radius: 6px;
   font-size: 11.5px; color: #9fb4d4; line-height: 1.4;
 }
+
+/* Build stamp. An unpacked extension keeps running the bundle it was loaded
+   with, so a stale load has to be visible rather than deduced. */
+.build {
+  margin: 14px 0 0; font-size: 10.5px; color: #5b6472;
+  font-variant-numeric: tabular-nums;
+}

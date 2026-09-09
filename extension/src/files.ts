@@ -1,4 +1,5 @@
 import { MAX_ATTACHMENT_BYTES, toBase64, fromBase64 } from './bytes'
+import { listenFirst, markHandled } from './listen'
 import type { AttachmentResponse, CheckResponse, SanitizeResponse } from './protocol'
 
 /**
@@ -292,6 +293,7 @@ export function installFileInterceptors(deps: FileGuardDeps): () => void {
           clientY: drag.clientY,
         })
         ours.add(replay)
+        markHandled(replay)
         target.dispatchEvent(replay)
       } catch (cause) {
         deps.warn(
@@ -338,6 +340,7 @@ export function installFileInterceptors(deps: FileGuardDeps): () => void {
 
         const replay = new Event('change', { bubbles: true })
         ours.add(replay)
+        markHandled(replay)
         input.dispatchEvent(replay)
       } catch (cause) {
         input.value = ''
@@ -351,11 +354,12 @@ export function installFileInterceptors(deps: FileGuardDeps): () => void {
     })()
   }
 
-  document.addEventListener('drop', onDrop, true)
-  document.addEventListener('change', onChange, true)
+  // `window` and `document`, both at capture. A drop is the one event where
+  // losing the race is unrecoverable: once the page holds the `File` it can
+  // upload it, and nothing afterwards takes that back.
+  const detach = [listenFirst('drop', onDrop), listenFirst('change', onChange)]
 
   return () => {
-    document.removeEventListener('drop', onDrop, true)
-    document.removeEventListener('change', onChange, true)
+    for (const off of detach) off()
   }
 }
