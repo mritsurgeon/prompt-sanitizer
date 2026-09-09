@@ -1,3 +1,4 @@
+import { suppressAllowed } from './allowlist'
 import { category } from './categories'
 import { classifyDocument, type DocumentClassification } from './classify'
 import {
@@ -7,11 +8,13 @@ import {
   type AssessedCandidate,
 } from './context'
 import { confirmAmbiguous, NO_ESCALATION, type EscalationStats } from './confirm'
+import type { MetricsPhase } from './metrics'
 import { businessDetector } from './detectors/business'
 import { confidentialDetector } from './detectors/confidential'
 import { entityDetector } from './detectors/entities'
 import { patternDetector } from './detectors/patterns'
 import { assessDocument } from './documentSensitivity'
+import { normalise, type Normalised } from './normalise'
 import { computeRisk } from './risk'
 import type {
   Detector,
@@ -46,6 +49,15 @@ export interface ScanOptions {
    * are therefore discarded.
    */
   structuralDelimiter?: string
+  /**
+   * Which surface is asking, recorded on the metrics envelope.
+   *
+   * The engine has no way to know whether anybody is waiting on it, and the
+   * acceptable latency differs by an order of magnitude between a held send
+   * and a background pass behind a banner — so a p95 that mixes them says
+   * nothing. Callers name their surface; the default is `unknown`.
+   */
+  phase?: MetricsPhase
 }
 
 export interface ScanResult {
@@ -73,7 +85,18 @@ export interface ScanResult {
    */
   declined: Array<{ start: number; end: number }>
   durationMs: number
+  /** Candidates dropped because the user allowlisted them. */
+  suppressed: number
   escalation: EscalationStats
+  /**
+   * True when the input contained characters that had to be normalised before
+   * the rules could see it — a zero-width space inside a token, a Cyrillic
+   * lookalike in a domain, a soft hyphen left by PDF extraction.
+   *
+   * Reported because it is worth knowing on its own: text is not usually
+   * obfuscated by accident, and a caller may want to say so.
+   */
+  normalised: boolean
 }
 
 /**
@@ -151,10 +174,25 @@ function resolveOverlaps(
  * negative evidence, and anything that lands in the low tier is discarded
  * rather than shown — that is where the false-positive reduction comes from.
  */
-export function scan(text: string, options: ScanOptions = {}): ScanResult {
+export function scan(raw: string, options: ScanOptions = {}): ScanResult {
   const started = performance.now()
 
-  const candidates = DETECTORS.flatMap((detector) => {
+  /**
+   * Everything below runs on the normalised text, and only the findings are
+   * projected back at the end.
+   *
+   * That split is deliberate. The detectors, the context engine, the
+   * classifier and the sensitivity assessment all read better signal from
+   * normalised text — a rule cannot match a phone number with a non-breaking
+   * space in it. But a finding has to point into the document the user
+   * actually has, because the sanitizer rewrites that document and the Word
+   * writer maps offsets into its runs. So the seam is here, at the boundary,
+   * rather than threaded through five files.
+   */
+  const source: Normalised = normalise(raw)
+  const text = source.text
+
+  const proposed = DETECTORS.flatMap((detector) => {
     try {
       return detector.run(text)
     } catch {
@@ -162,6 +200,18 @@ export function scan(text: string, options: ScanOptions = {}): ScanResult {
       return []
     }
   })
+
+  /**
+   * The allowlist, applied here and not later.
+   *
+   * Everything below reads the candidate list: the classifier, the
+   * document-sensitivity assessment (which counts how many distinct companies
+   * are named), the context engine's entity-consistency pass, the recoverable
+   * budget and the declined list. A value the user has said they do not need
+   * warning about should be absent from all of it rather than filtered out at
+   * the end having influenced each one.
+   */
+  const { kept: candidates, suppressed } = suppressAllowed(proposed)
 
   const classification = classifyDocument(text, options.meta)
   const document = assessDocument(
@@ -179,14 +229,33 @@ export function scan(text: string, options: ScanOptions = {}): ScanResult {
 
   const believable = assessed.filter((item) => item.tier !== 'low' && usable(item))
   const resolved = resolveOverlaps(believable, text.length)
-  const findings = resolved.map((item, i) => toFinding(item, `f${i}`))
+
+  /**
+   * Back to the user's coordinates.
+   *
+   * The value is re-sliced rather than kept, because the sanitizer has to
+   * replace what is actually in the document. Reporting the normalised
+   * spelling would hand it a string that does not occur there — the finding
+   * would be shown and then silently fail to be removed, which is the one
+   * outcome worse than not finding it.
+   */
+  const project = (finding: Finding): Finding => {
+    if (!source.changed) return finding
+    const [start, end] = source.project(finding.start, finding.end)
+    return { ...finding, start, end, value: raw.slice(start, end) }
+  }
+
+  const findings = resolved.map((item, i) => project(toFinding(item, `f${i}`)))
 
   // The rules declined to call these, but they declined out of ignorance
   // rather than out of evidence — nothing argued against them, no gazetteer
   // simply knew the word. Bounded, because a large document is full of them.
+  // In normalised coordinates, like `assessed` — the projection above has
+  // already happened, so this uses the resolved items rather than the
+  // findings.
   const claimed = new Uint8Array(text.length)
-  for (const finding of findings) {
-    for (let i = finding.start; i < finding.end; i++) claimed[i] = 1
+  for (const item of resolved) {
+    for (let i = item.start; i < item.end; i++) claimed[i] = 1
   }
 
   const recoverable = assessed
@@ -200,9 +269,24 @@ export function scan(text: string, options: ScanOptions = {}): ScanResult {
     )
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, MAX_RECOVERABLE)
-    .map((item, i) => toFinding(item, `r${i}`))
+    .map((item, i) => project(toFinding(item, `r${i}`)))
 
-  const offered = new Set(recoverable.map((r) => `${r.start}:${r.end}`))
+  // Keyed in normalised space, which is what `assessed` carries; `recoverable`
+  // has already been projected, so the offered set is rebuilt from the
+  // pre-projection items.
+  const offeredItems = assessed
+    .filter(
+      (item) =>
+        item.tier === 'low' &&
+        item.unresolved &&
+        item.confidence >= RECOVERABLE_FLOOR &&
+        usable(item) &&
+        !claimed[item.start],
+    )
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, MAX_RECOVERABLE)
+  const offered = new Set(offeredItems.map((r) => `${r.start}:${r.end}`))
+
   const declined = assessed
     .filter(
       (item) =>
@@ -211,10 +295,15 @@ export function scan(text: string, options: ScanOptions = {}): ScanResult {
         !offered.has(`${item.start}:${item.end}`),
     )
     .slice(0, MAX_DECLINED)
-    .map((item) => ({ start: item.start, end: item.end }))
+    .map((item) => {
+      const [start, end] = source.changed
+        ? source.project(item.start, item.end)
+        : [item.start, item.end]
+      return { start, end }
+    })
 
   return {
-    text,
+    text: raw,
     findings,
     risk: computeRisk(findings),
     document,
@@ -223,7 +312,9 @@ export function scan(text: string, options: ScanOptions = {}): ScanResult {
     recoverable,
     declined,
     durationMs: performance.now() - started,
+    suppressed,
     escalation: NO_ESCALATION,
+    normalised: source.changed,
   }
 }
 
@@ -248,6 +339,8 @@ export async function scanWithConfirmation(
     result.findings,
     result.recoverable,
     result.declined,
+    undefined,
+    options.phase,
   )
 
   return {

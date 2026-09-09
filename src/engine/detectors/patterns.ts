@@ -1,3 +1,4 @@
+import { looksLikePlaceholder, looksLikeStructuredId, looksLikeWords } from '../entropy'
 import type { Candidate, CategoryId, Detector, DetectorLayer } from '../types'
 
 /**
@@ -78,12 +79,18 @@ export const PATTERN_RULES: PatternRule[] = [
     category: 'API_KEY',
     pattern: /\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b/g,
     confidence: 0.99,
+    // Rejects `AKIAAAAAAAAAAAAAAAAA` and friends. Config templates are full of
+    // them, and flagging a placeholder teaches people to ignore the warning.
+    // Deliberately permissive: AWS's own documentation key reads as language
+    // and is still worth flagging.
+    validate: (v) => !looksLikePlaceholder(v),
   },
   {
     name: 'GitHub token',
     category: 'ACCESS_TOKEN',
     pattern: /\bgh[pousr]_[A-Za-z0-9]{30,}\b/g,
     confidence: 0.99,
+    validate: (v) => !looksLikePlaceholder(v),
   },
   {
     name: 'Slack token',
@@ -96,12 +103,15 @@ export const PATTERN_RULES: PatternRule[] = [
     category: 'API_KEY',
     pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g,
     confidence: 0.98,
+    validate: (v) => !looksLikePlaceholder(v),
   },
   {
     name: 'Stripe key',
     category: 'API_KEY',
     pattern: /\b[srp]k_(?:live|test)_[A-Za-z0-9]{16,}\b/g,
     confidence: 0.98,
+    // `sk_live_XXXXXXXXXXXXXXXX` is in every integration guide ever written.
+    validate: (v) => !looksLikePlaceholder(v),
   },
   {
     name: 'Model provider key',
@@ -145,12 +155,33 @@ export const PATTERN_RULES: PatternRule[] = [
     confidence: 0.93,
   },
   {
+    /**
+     * A secret with no shape of its own.
+     *
+     * The rules above recognise credentials by their prefix — `AKIA`, `ghp_`,
+     * `sk-`, a JWT's three dots. Most secrets have none: a hex database
+     * password, an internal salt, a token from a service nobody wrote a rule
+     * for. What marks those out is *where* they appear, which this pattern
+     * supplies, and *that they are not words*, which the validator does.
+     *
+     * The bar is deliberately lower than for an unnamed blob. `api_key =` is
+     * strong evidence on its own, so the value only has to not be obviously
+     * something else — a word, or a placeholder. Requiring high entropy here
+     * as well would drop short real keys for no gain.
+     *
+     * Without the validator this fires on `api_key = changeme` and
+     * `token: correcthorsebatterystaple`, and it feeds a category the policy
+     * layer is allowed to **block** — where a false positive does not annoy
+     * somebody, it stops them working.
+     */
     name: 'Secret or key assignment',
     category: 'API_KEY',
     pattern:
-      /\b(?:api[_-]?key|apikey|secret[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|private[_-]?token|app[_-]?secret|token)\s*(?:is|:|=|=>)\s*(?:"([^"\n]{6,120})"|'([^'\n]{6,120})'|([A-Za-z0-9_\-.=+/]{8,120}))/gi,
+      /\b(?:api[_-]?key|apikey|secret[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?token|session[_-]?key|app[_-]?secret|credential|secret|token)\s*(?:is|:|=|=>)\s*(?:"([^"\n]{6,120})"|'([^'\n]{6,120})'|([A-Za-z0-9_\-.=+/]{8,120}))/gi,
     valueGroup: -1,
     confidence: 0.92,
+    validate: (v) =>
+      !looksLikeWords(v) && !looksLikePlaceholder(v) && !looksLikeStructuredId(v),
   },
 
   // ---- structured personal data ------------------------------------------
