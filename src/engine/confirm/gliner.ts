@@ -47,13 +47,46 @@ const DEFAULT_LABELS: Record<string, CategoryId> = {
 
 const ADJUDICATED = new Set<CategoryId>(['PERSON', 'ORGANISATION', 'LOCATION'])
 
+/**
+ * A provisioned checkpoint. Several may be installed; the first one that
+ * actually exists wins.
+ */
+export interface GlinerVariant {
+  /** Folder under `basePath`, and the tokenizer path. */
+  modelName: string
+  /** Provisioned size — the escalation gate and the metrics both read this. */
+  bytes: number
+}
+
+/**
+ * Preference order.
+ *
+ * The pruned checkpoint is 40% smaller (109.7 MB against 183.4 MB) and loads
+ * in roughly half the time, at identical accuracy: held-out F1 95.2%/100%, 13
+ * findings on the dense document, 8/8 rare-name recall — every figure the same
+ * as the full checkpoint across three runs. So it is preferred when present.
+ *
+ * It is preferred rather than required because producing it needs Python with
+ * `onnx` and `numpy` (`npm run provision:prune`), and `npm run provision:model`
+ * alone must keep working on a machine that has neither.
+ */
+const VARIANTS: GlinerVariant[] = [
+  { modelName: 'gliner-small-32k', bytes: 110_000_000 },
+  { modelName: 'gliner-small', bytes: 195_000_000 },
+]
+
 export interface GlinerOptions {
   /**
    * Where the tokenizer lives. In the browser this is the transformers.js
    * local model root; in Node it is the directory containing `modelName`.
    */
   basePath?: string
-  /** Folder name of the provisioned model under `basePath`. */
+  /**
+   * Pin one checkpoint instead of resolving by preference. Supplying either
+   * this or `modelFile` disables variant resolution, which is what the
+   * benchmark scripts want — they score a named artifact, not "whatever is
+   * installed".
+   */
   modelName?: string
   /** Full path or URL to the .onnx weights. */
   modelFile?: string
@@ -71,6 +104,15 @@ export interface GlinerOptions {
   maxWidth?: number
   /** Entity label -> category. Overridden for PII-tuned checkpoints. */
   labels?: Record<string, CategoryId>
+  /**
+   * Provisioned size of this checkpoint.
+   *
+   * Not cosmetic: the escalation gate keys on whether a confirmer has weights
+   * at all (`bytes === 0` means free to run, so it is never gated), and a
+   * pruned artifact is 40% smaller than the default. Reporting the wrong
+   * figure misstates the cost of every escalation in the metrics.
+   */
+  bytes?: number
 }
 
 interface GlinerSpan {
@@ -95,15 +137,37 @@ const isNode =
   process.versions?.node != null &&
   typeof window === 'undefined'
 
-const DEFAULTS: Required<GlinerOptions> = {
+const DEFAULTS = {
   basePath: '/models/',
-  modelName: 'gliner-small',
-  modelFile: '/models/gliner-small/onnx/model.onnx',
   // Our own origin, never the CDN gliner would otherwise reach for.
   wasmPaths: '/models/ort/',
   threshold: 0.45,
   maxWidth: 12,
   labels: DEFAULT_LABELS,
+} satisfies Partial<GlinerOptions>
+
+/** Derived from `basePath` so the two can never disagree about a location. */
+const fileFor = (basePath: string, modelName: string) =>
+  `${basePath.replace(/\/+$/, '')}/${modelName}/onnx/model.onnx`
+
+interface Resolved {
+  modelName: string
+  modelFile: string
+  bytes: number
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    if (isNode) {
+      // Built dynamically so the bundler cannot statically resolve it and
+      // drag Node built-ins into the browser build.
+      const fs = await import(/* @vite-ignore */ 'node:fs'.slice(0))
+      return fs.existsSync(path)
+    }
+    return (await fetch(path, { method: 'HEAD' })).ok
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -117,27 +181,53 @@ export function createGlinerConfirmer(
 
   let model: { inference: (a: unknown) => Promise<GlinerSpan[][]> } | null = null
   let loading: Promise<void> | null = null
-  let available: boolean | null = null
   let loadMs: number | null = null
   let perCandidateMs: number | null = null
 
+  /** Which checkpoint we settled on, once the question has been asked. */
+  let resolved: Resolved | null = null
+  let resolving: Promise<Resolved | null> | null = null
+
+  const pinned = options.modelName != null || options.modelFile != null
+
+  async function resolve(): Promise<Resolved | null> {
+    if (resolved) return resolved
+    if (resolving) return resolving
+
+    resolving = (async () => {
+      const candidates: Resolved[] = pinned
+          ? [
+              {
+                modelName: options.modelName ?? VARIANTS[VARIANTS.length - 1].modelName,
+                modelFile:
+                  options.modelFile ??
+                  fileFor(config.basePath, options.modelName as string),
+                bytes: options.bytes ?? VARIANTS[VARIANTS.length - 1].bytes,
+              },
+            ]
+          : VARIANTS.map((v) => ({
+              modelName: v.modelName,
+              modelFile: fileFor(config.basePath, v.modelName),
+              bytes: options.bytes ?? v.bytes,
+            }))
+
+      for (const candidate of candidates) {
+        if (await exists(candidate.modelFile)) {
+          resolved = candidate
+          return resolved
+        }
+      }
+      return null
+    })().finally(() => {
+      resolving = null
+    })
+
+    return resolving
+  }
+
   /** Cheap existence check. Must not load the weights. */
   async function isAvailable(): Promise<boolean> {
-    if (available !== null) return available
-    try {
-      if (isNode) {
-        // Built dynamically so the bundler cannot statically resolve it and
-        // drag Node built-ins into the browser build.
-        const fs = await import(/* @vite-ignore */ 'node:fs'.slice(0))
-        available = fs.existsSync(config.modelFile)
-      } else {
-        const response = await fetch(config.modelFile, { method: 'HEAD' })
-        available = response.ok
-      }
-    } catch {
-      available = false
-    }
-    return available ?? false
+    return (await resolve()) !== null
   }
 
   async function load(): Promise<void> {
@@ -146,6 +236,8 @@ export function createGlinerConfirmer(
 
     loading = (async () => {
       const started = performance.now()
+      const variant = await resolve()
+      if (!variant) throw new Error('no GLiNER checkpoint is provisioned')
 
       // The browser build pulls in onnxruntime-web; the node build uses
       // onnxruntime-node.
@@ -169,13 +261,13 @@ export function createGlinerConfirmer(
       transformers.env.localModelPath = config.basePath
 
       const instance = new Gliner({
-        tokenizerPath: config.modelName,
+        tokenizerPath: variant.modelName,
         // Node takes only a path; the web build also wants an execution
         // provider and is worth letting use more than one thread.
         onnxSettings: isNode
-          ? { modelPath: config.modelFile }
+          ? { modelPath: variant.modelFile }
           : {
-              modelPath: config.modelFile,
+              modelPath: variant.modelFile,
               // WebGPU where the browser has it — it moves the one-off startup
               // from seconds to under a second on a laptop GPU, and that
               // startup is the only part of this anybody notices. WASM
@@ -353,7 +445,10 @@ export function createGlinerConfirmer(
     label: 'GLiNER check',
     get cost() {
       return {
-        bytes: 195_000_000,
+        // Non-zero before resolution: the escalation gate reads `bytes === 0`
+        // as "free to run, never gate it", and a confirmer with weights must
+        // not look free just because nobody has asked where it lives yet.
+        bytes: resolved?.bytes ?? VARIANTS[VARIANTS.length - 1].bytes,
         startupMs: loadMs,
         perCandidateMs,
       }

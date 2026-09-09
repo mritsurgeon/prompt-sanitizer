@@ -32,3 +32,4 @@ bench/zs
 
 # Provisioned model weights (npm run provision:model) — ~195 MB
 public/models
+bench/generated
