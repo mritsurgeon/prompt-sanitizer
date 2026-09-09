@@ -333,6 +333,8 @@
 
   .pill.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
   .pill.off { color: var(--off); border-color: color-mix(in srgb, var(--off) 45%, transparent); }
+  .pill.caution { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+  .pill.stop { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 45%, transparent); }
 
   .dot { width: .5rem; height: .5rem; border-radius: 50%; flex: none; }
 
@@ -393,8 +395,9 @@
     <span class="eyebrow">AI Safe · engine reference</span>
     <h1>Architecture &amp; data flow</h1>
     <p class="lede">
-      A browser-only static app with no backend. Everything below — parsing, detection,
-      judgement, classification, sanitization — runs as plain TypeScript inside the tab.
+      One engine, two front ends, no backend. Everything below — parsing, detection,
+      judgement, classification, sanitization, the policy call — runs as plain TypeScript,
+      either in the tab you opened or in the extension watching the composer.
     </p>
   </header>
 
@@ -435,8 +438,9 @@
 
     <p class="prose">
       Your content still never leaves the machine — there is no server to send it to.
-      The single request the app makes is for its own model weights, from its own origin,
-      and only when a scan escalates. Those files are downloaded once at install time by
+      The single request either front end makes is for the model weights: the app from its
+      own origin, the extension from the origin that provisioned them, and only when a scan
+      escalates. Those files are downloaded once at install time by
       <code>npm run provision:model</code>. Serve the app offline and it keeps working.
     </p>
   </section>
@@ -793,8 +797,322 @@
 
   <section>
     <div class="section-head">
+      <span class="eyebrow">Two surfaces</span>
+      <h2>Where this engine runs</h2>
+    </div>
+
+    <figure>
+      <div class="canvas">
+        <svg viewBox="0 0 880 330" role="img"
+             aria-label="Two front ends sit above one shared engine: the web app tab owns file extraction, the cleaning modes, the improver and classification; the extension owns site adapters, paste and submit interception, the banner and the offscreen model host. Both call the same src/engine in-process, the tab directly and the extension from its background worker.">
+          <defs>
+            <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5"
+                    markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
+            </marker>
+          </defs>
+
+          <!-- the two surfaces -->
+          <text class="dgm-t" x="220" y="28" text-anchor="middle">The web app tab</text>
+          <text class="dgm-t" x="660" y="28" text-anchor="middle">The extension</text>
+
+          <rect class="dgm-box" x="80" y="44" width="280" height="104" rx="7"></rect>
+          <text class="dgm-s" x="220" y="70" text-anchor="middle">file extraction — docx, xlsx, pdf</text>
+          <text class="dgm-s" x="220" y="92" text-anchor="middle">three cleaning modes</text>
+          <text class="dgm-s" x="220" y="114" text-anchor="middle">prompt improver</text>
+          <text class="dgm-s" x="220" y="136" text-anchor="middle">document classification</text>
+
+          <rect class="dgm-box" x="520" y="44" width="280" height="104" rx="7"></rect>
+          <text class="dgm-s" x="660" y="70" text-anchor="middle">site adapters</text>
+          <text class="dgm-s" x="660" y="92" text-anchor="middle">paste and submit interception</text>
+          <text class="dgm-s" x="660" y="114" text-anchor="middle">the banner</text>
+          <text class="dgm-s" x="660" y="136" text-anchor="middle">a host for the model</text>
+
+          <line class="dgm-line" x1="220" y1="148" x2="220" y2="184" marker-end="url(#ar3)"></line>
+          <text class="dgm-e" x="230" y="170">in the tab</text>
+          <line class="dgm-line" x1="660" y1="148" x2="660" y2="184" marker-end="url(#ar3)"></line>
+          <text class="dgm-e" x="670" y="170">in the worker</text>
+
+          <!-- the shared engine -->
+          <rect class="dgm-box-accent" x="180" y="184" width="520" height="100" rx="7"></rect>
+          <text class="dgm-t" x="440" y="210" text-anchor="middle">src/engine — shared verbatim</text>
+          <text class="dgm-s" x="440" y="232" text-anchor="middle">detect · context · confirm · sanitize · policy</text>
+          <text class="dgm-e" x="440" y="254" text-anchor="middle">one detector, one confidence model, one sanitizer</text>
+          <text class="dgm-e" x="440" y="272" text-anchor="middle">imported, not copied — no socket, no localhost bridge</text>
+
+          <text class="dgm-e" x="440" y="312" text-anchor="middle">A safe paste costs a function call, not a round trip.</text>
+        </svg>
+      </div>
+      <figcaption>
+        The extension is a second front end, not a second engine. What differs between the
+        two is surface — where the text comes from and how an answer is shown; everything
+        that decides anything is the same code, called in-process.
+      </figcaption>
+    </figure>
+
+    <div class="note">
+      <strong>The obvious design was a localhost bridge, and it was not built.</strong>
+      A background service owning the engine would have been the first server this project
+      ever had, and “nothing leaves your device” is currently true because there is nowhere
+      for it to go. Running in-process also removes the failure mode where protection
+      silently stops working because a service is not running.
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="eyebrow">The enforcement point</span>
+      <h2>What happens when you hit send</h2>
+    </div>
+
+    <figure>
+      <div class="canvas">
+        <svg viewBox="0 0 880 700" role="img"
+             aria-label="A prompt at an AI composer takes two paths: a paste, which only warns, and a send, which is held. Both reach the content script, which forwards text and hostname to the background worker. The worker runs stage one rules and hands the findings to policy, which returns allow, warn or block. Allow shows nothing and the send proceeds; warn and block raise a banner that is immediately actionable, and the closer look starts behind that banner and updates it in place.">
+          <defs>
+            <marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5"
+                    markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
+            </marker>
+          </defs>
+
+          <!-- composer -->
+          <rect class="dgm-box" x="270" y="10" width="340" height="46" rx="7"></rect>
+          <text class="dgm-t" x="440" y="31" text-anchor="middle">The composer on an AI site</text>
+          <text class="dgm-s" x="440" y="47" text-anchor="middle">chatgpt · claude · gemini · copilot · anything else</text>
+
+          <path class="dgm-line" d="M 440 56 L 440 78 L 235 78 L 235 100" marker-end="url(#ar4)"></path>
+          <path class="dgm-line" d="M 440 56 L 440 78 L 645 78 L 645 100" marker-end="url(#ar4)"></path>
+          <text class="dgm-e" x="330" y="72" text-anchor="middle">paste event</text>
+          <text class="dgm-e" x="550" y="72" text-anchor="middle">Enter, or the send button</text>
+
+          <!-- the two moments -->
+          <rect class="dgm-box" x="110" y="100" width="250" height="52" rx="7"></rect>
+          <text class="dgm-t" x="235" y="124" text-anchor="middle">Paste — warns</text>
+          <text class="dgm-s" x="235" y="141" text-anchor="middle">never blocks the clipboard</text>
+
+          <rect class="dgm-box" x="520" y="100" width="250" height="52" rx="7"></rect>
+          <text class="dgm-t" x="645" y="124" text-anchor="middle">Send — held</text>
+          <text class="dgm-s" x="645" y="141" text-anchor="middle">until the answer comes back</text>
+
+          <path class="dgm-line" d="M 235 152 L 235 172 L 440 172 L 440 190" marker-end="url(#ar4)"></path>
+          <path class="dgm-line" d="M 645 152 L 645 172 L 440 172 L 440 190" marker-end="url(#ar4)"></path>
+
+          <!-- content script -->
+          <rect class="dgm-box" x="190" y="190" width="500" height="56" rx="7"></rect>
+          <text class="dgm-t" x="440" y="213" text-anchor="middle">Content script — renders, never decides</text>
+          <text class="dgm-s" x="440" y="230" text-anchor="middle">holds no findings, keeps no text past the call</text>
+
+          <line class="dgm-line" x1="440" y1="246" x2="440" y2="288" marker-end="url(#ar4)"></line>
+          <text class="dgm-e" x="450" y="272">text + hostname</text>
+
+          <!-- worker -->
+          <rect class="dgm-box-accent" x="190" y="288" width="500" height="68" rx="7"></rect>
+          <text class="dgm-t" x="440" y="311" text-anchor="middle">Background worker — the engine, in-process</text>
+          <text class="dgm-s" x="440" y="328" text-anchor="middle">stage one only: rules, synchronous, no model</text>
+          <text class="dgm-s" x="440" y="345" text-anchor="middle">no network · no server · no round trip</text>
+
+          <line class="dgm-line" x1="440" y1="356" x2="440" y2="396" marker-end="url(#ar4)"></line>
+          <text class="dgm-e" x="450" y="380">findings</text>
+
+          <!-- policy -->
+          <rect class="dgm-box" x="270" y="396" width="340" height="46" rx="7"></rect>
+          <text class="dgm-t" x="440" y="417" text-anchor="middle">policy.ts — chooses the response</text>
+          <text class="dgm-s" x="440" y="433" text-anchor="middle">the page itself holds no judgement of its own</text>
+
+          <path class="dgm-line" d="M 440 442 L 440 464 L 140 464 L 140 486" marker-end="url(#ar4)"></path>
+          <path class="dgm-line" d="M 440 442 L 440 486" marker-end="url(#ar4)"></path>
+          <path class="dgm-line" d="M 440 442 L 440 464 L 740 464 L 740 486" marker-end="url(#ar4)"></path>
+
+          <text class="dgm-e" x="285" y="458" text-anchor="middle">nothing found</text>
+          <text class="dgm-e" x="450" y="458">anything else</text>
+          <text class="dgm-e" x="650" y="458" text-anchor="middle">a live credential</text>
+
+          <!-- decisions -->
+          <rect class="dgm-box" x="40" y="486" width="200" height="48" rx="7"></rect>
+          <text class="dgm-t" x="140" y="508" text-anchor="middle" fill="var(--ok)">allow</text>
+          <text class="dgm-s" x="140" y="524" text-anchor="middle">the send just happens</text>
+          <text class="dgm-e" x="140" y="556" text-anchor="middle">nothing is shown at all</text>
+
+          <rect class="dgm-box" x="340" y="486" width="200" height="48" rx="7"></rect>
+          <text class="dgm-t" x="440" y="508" text-anchor="middle" fill="var(--warn)">warn</text>
+          <text class="dgm-s" x="440" y="524" text-anchor="middle">send anyway offered</text>
+
+          <rect class="dgm-box" x="640" y="486" width="200" height="48" rx="7"></rect>
+          <text class="dgm-t" x="740" y="508" text-anchor="middle" fill="var(--crit)">block</text>
+          <text class="dgm-s" x="740" y="524" text-anchor="middle">the send stops here</text>
+
+          <line class="dgm-line" x1="440" y1="534" x2="440" y2="570" marker-end="url(#ar4)"></line>
+          <path class="dgm-line" d="M 740 534 L 740 594 L 630 594" marker-end="url(#ar4)"></path>
+
+          <!-- banner -->
+          <rect class="dgm-box-accent" x="250" y="570" width="380" height="48" rx="7"></rect>
+          <text class="dgm-t" x="440" y="592" text-anchor="middle">The banner — actionable immediately</text>
+          <text class="dgm-s" x="440" y="608" text-anchor="middle">Mask it · Use fake names · Edit in AI Safe · Send anyway</text>
+
+          <line class="dgm-line" x1="440" y1="618" x2="440" y2="648" marker-end="url(#ar4)"></line>
+          <text class="dgm-e" x="450" y="638">starts behind it</text>
+
+          <!-- closer look -->
+          <rect class="dgm-box" x="240" y="648" width="400" height="44" rx="7"></rect>
+          <text class="dgm-t" x="440" y="668" text-anchor="middle">Closer look — only the unsettled findings</text>
+          <text class="dgm-s" x="440" y="684" text-anchor="middle">offscreen document with GLiNER, or the worker’s deep-context</text>
+
+          <path class="dgm-line" d="M 240 670 L 170 670 L 170 594 L 250 594" marker-end="url(#ar4)"></path>
+          <text class="dgm-e" x="160" y="628" text-anchor="end">updates in place,</text>
+          <text class="dgm-e" x="160" y="644" text-anchor="end">usually withdrawing</text>
+        </svg>
+      </div>
+      <figcaption>
+        The held keystroke is the only place the extension is allowed to interrupt, and it
+        is why the paste can stay lenient. Nothing ever waits on the model: the banner is
+        complete the moment it appears, and the closer look folds into it afterwards — if
+        the user cleans, dismisses or sends first, the late answer is discarded.
+      </figcaption>
+    </figure>
+
+    <div class="note">
+      <strong>Two moments are observed, and nothing else.</strong> No keystroke scanning,
+      no mutation observers on the composer, no polling. Typing with the extension
+      installed is byte-for-byte the same as typing without it — and when a redesign moves
+      a composer somewhere the adapter cannot find, the script says so in the console
+      rather than degrading quietly to no protection.
+    </div>
+
+    <p class="prose">
+      Engine time on the paste path, percentiles rather than means —
+      <code>npm run check:ext</code>. Chrome’s message passing adds roughly 0.1–1 ms on
+      top:
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Paste</th>
+            <th>Chars</th>
+            <th>P50</th>
+            <th>P95</th>
+            <th>P99</th>
+            <th>Decision</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Short question</td>
+            <td class="num">60</td>
+            <td class="num">0.05 ms</td>
+            <td class="num">0.13 ms</td>
+            <td class="num">0.58 ms</td>
+            <td>allow</td>
+          </tr>
+          <tr>
+            <td>Pasted article</td>
+            <td class="num">1,756</td>
+            <td class="num">0.63 ms</td>
+            <td class="num">0.73 ms</td>
+            <td class="num">0.79 ms</td>
+            <td>allow</td>
+          </tr>
+          <tr>
+            <td>Customer email</td>
+            <td class="num">117</td>
+            <td class="num">0.17 ms</td>
+            <td class="num">0.26 ms</td>
+            <td class="num">0.35 ms</td>
+            <td style="color: var(--warn)">warn</td>
+          </tr>
+          <tr>
+            <td>Pasted credential</td>
+            <td class="num">92</td>
+            <td class="num">0.06 ms</td>
+            <td class="num">0.07 ms</td>
+            <td class="num">0.17 ms</td>
+            <td style="color: var(--crit)">block</td>
+          </tr>
+          <tr>
+            <td>Long document</td>
+            <td class="num">18,428</td>
+            <td class="num">17.2 ms</td>
+            <td class="num">18.4 ms</td>
+            <td class="num">19.9 ms</td>
+            <td style="color: var(--warn)">warn</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="eyebrow">Policy</span>
+      <h2>Findings in, a decision out</h2>
+    </div>
+
+    <p class="prose">
+      Detection answers <em>what is here</em>. Policy answers <em>what should happen about
+      it</em>, and those are different questions with different owners — the same finding
+      warrants a block in one organisation and a shrug in another. <code>policy.ts</code>
+      lives in the engine rather than the extension, so the app, the extension and the
+      tests all reach the same verdict from the same rules.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th>What was found</th>
+            <th>Default</th>
+            <th>Why</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>A live credential, certain</td>
+            <td><span class="pill stop"><span class="dot" style="background: var(--crit)"></span>block</span></td>
+            <td>The only thing that stops somebody outright</td>
+          </tr>
+          <tr>
+            <td>Personal data, certain</td>
+            <td><span class="pill caution"><span class="dot" style="background: var(--warn)"></span>warn</span></td>
+            <td>Worth a pause, not a wall</td>
+          </tr>
+          <tr>
+            <td>Roadmap, pricing, internal plans</td>
+            <td><span class="pill caution"><span class="dot" style="background: var(--warn)"></span>warn</span></td>
+            <td>Same — the user knows their context better than the rules do</td>
+          </tr>
+          <tr>
+            <td>Hostnames, case and customer numbers</td>
+            <td><span class="pill caution"><span class="dot" style="background: var(--warn)"></span>warn</span></td>
+            <td>Same</td>
+          </tr>
+          <tr>
+            <td><strong>Anything the engine is not certain about</strong></td>
+            <td><span class="pill caution"><span class="dot" style="background: var(--warn)"></span>warn at most</span></td>
+            <td>A “possible” name must never be the thing that stops somebody working, whatever the policy says about its category</td>
+          </tr>
+          <tr>
+            <td><strong>The engine could not be reached</strong></td>
+            <td><span class="pill caution"><span class="dot" style="background: var(--warn)"></span>warn, and say so</span></td>
+            <td>“We found nothing” and “we could not look” are different states; collapsing them into a quiet allow is how a safety tool ends up protecting nothing</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note flag">
+      <strong>Deliberately not maximal.</strong> A tool that blocks constantly gets
+      switched off, and then it protects nothing. So only live credentials stop a send
+      outright, everything else asks, and the primary action always moves the user
+      forward — <em>Mask it</em>, <em>Use fake names</em> — never “you may not do this”.
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
       <span class="eyebrow">Boundaries</span>
-      <h2>What never leaves the tab</h2>
+      <h2>What never leaves the device</h2>
     </div>
 
     <ul class="clean prose">
@@ -803,12 +1121,17 @@
       <li>The prompt improver only ever sees the <em>sanitized</em> text; the original is not passed to it.</li>
       <li>The feedback dataset stores the <em>shape</em> of an assessment — counts, signal ids, topics — never raw content, and has no transport of any kind.</li>
       <li>Cleaned files are built in memory and handed to the browser’s download; the original is never modified.</li>
+      <li>In the extension, the content script keeps no finding and no text beyond the call it made — it asks the worker and renders the answer, inside a document the AI site’s own scripts share.</li>
+      <li>The worker records counts and latencies only: how many checks, how many blocked, a rolling window of milliseconds. Never content, never a URL, never a page title.</li>
+      <li><em>Edit in AI Safe</em> hands the prompt over through the extension’s session storage, never the URL — a query string ends up in history, in the omnibox and in anything sampling open tabs, which is the exposure this tool exists to prevent.</li>
+      <li>The extension’s one network request is for the model weights, from the origin that provisioned them. Executable code always ships with the extension: MV3 forbids fetching script, and loading code over the network would defeat the point of the CSP.</li>
     </ul>
   </section>
 
   <footer>
-    126 tests across 7 files · 0 false positives on 50 traps · 0 false negatives on 28
-    expected · held-out ambiguity F1 95.2% · document type 12/12 · fast path 0.027–0.24 ms
+    193 tests across 10 files · 0 false positives on 65 traps · 0 false negatives on 33
+    expected · held-out ambiguity 47/48 with GLiNER · document type 12/12 · at the
+    composer, P50 0.05 ms on a question and 0.63 ms on a pasted article
   </footer>
 
 </div>
