@@ -47,16 +47,11 @@ function element<K extends keyof HTMLElementTagNameMap>(
 async function activeSessionKey(): Promise<string | null> {
   try {
     const [tab] = await runtime.tabs.query({ active: true, currentWindow: true })
-    if (typeof tab?.id !== 'number') return null
-    // Derived the same way the worker derives it, from the same two parts:
-    // which tab, and which conversation inside it.
-    let path = ''
-    try {
-      path = tab.url ? new URL(tab.url).pathname : ''
-    } catch {
-      path = ''
-    }
-    return `${tab.id}:${path}`
+    // The tab, and only the tab — the same key the worker files under. It used
+    // to include the pathname, and ChatGPT rewrites `/` to `/c/<id>` after the
+    // first message, so the panel came up empty for exactly the conversation
+    // that had just been cleaned.
+    return typeof tab?.id === 'number' ? String(tab.id) : null
   } catch {
     return null
   }

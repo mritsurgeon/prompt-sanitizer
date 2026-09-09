@@ -126,6 +126,15 @@ describe('deciding on one file', () => {
     expect(deps.checked).toHaveLength(0)
   })
 
+  it('checks a file holding nothing but a short address', async () => {
+    const deps = harness(WARN, 'cancel')
+    await reviewFile(textFile('note.txt', 'x@y.com'), deps)
+    // This path was left at a threshold of 12 after the composer path was
+    // lowered, so a text file holding only an address went through unchecked
+    // while the same address typed into the composer did not.
+    expect(deps.checked).toEqual(['x@y.com'])
+  })
+
   it('says so when the worker does not answer', async () => {
     const deps = harness(null)
     expect(await reviewFile(textFile(), deps)).toEqual({ kind: 'allow' })

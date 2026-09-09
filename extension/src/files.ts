@@ -1,4 +1,5 @@
 import { MAX_ATTACHMENT_BYTES, toBase64, fromBase64 } from './bytes'
+import { MIN_CHARS } from './config'
 import { listenFirst, markHandled } from './listen'
 import type { AttachmentResponse, CheckResponse, SanitizeResponse } from './protocol'
 
@@ -119,7 +120,10 @@ export async function reviewFile(
     return { kind: 'allow' }
   }
 
-  if (text.trim().length < 12) return { kind: 'allow' }
+  // Was 12, and the composer path was fixed while this was not — so a text
+  // file holding nothing but an address went through unchecked while the same
+  // address typed into the composer did not. One constant now, in `config.ts`.
+  if (text.trim().length < MIN_CHARS) return { kind: 'allow' }
 
   const response = await deps.check(text)
   if (!response) {

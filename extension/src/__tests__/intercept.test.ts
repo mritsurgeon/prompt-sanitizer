@@ -322,13 +322,14 @@ describe('re-issuing the send', () => {
 describe('the length threshold', () => {
   it('sits below the shortest thing the engine can find', async () => {
     const { scan } = await import('@/engine/detect')
+    const { MIN_CHARS } = await import('../config')
     // It was 12, chosen as a round number, and 12 hid real findings. This
     // asserts the relationship rather than the number, so a future rule that
     // can match something shorter fails the build instead of quietly slipping
     // past the submit gate.
     for (const shortest of ['a@b.c', '1@2.3']) {
       expect(scan(shortest).findings.length).toBeGreaterThan(0)
-      expect(shortest.length).toBeGreaterThanOrEqual(content.MIN_CHARS)
+      expect(shortest.length).toBeGreaterThanOrEqual(MIN_CHARS)
     }
   })
 

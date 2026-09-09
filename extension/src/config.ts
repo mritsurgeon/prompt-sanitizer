@@ -16,3 +16,17 @@ export const APP_ORIGIN = 'http://localhost:5173'
 
 /** Origins the content script will accept a handoff on. */
 export const APP_ORIGINS = [APP_ORIGIN, 'http://localhost:4173']
+
+/**
+ * Below this, there is nothing the engine could find.
+ *
+ * It was 12 in two places, chosen as a round number, and 12 hides real
+ * findings: the shortest text the engine can flag is a five-character email
+ * address (`a@b.c`). Four sits below that rather than at it, so a future rule
+ * matching something shorter does not silently start slipping past.
+ *
+ * Shared, because it was fixed on the composer path and left at 12 on the
+ * attachment path — a text file containing only an address went through
+ * unchecked while a prompt containing the same address did not.
+ */
+export const MIN_CHARS = 4

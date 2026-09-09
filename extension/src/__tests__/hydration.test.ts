@@ -56,7 +56,7 @@ beforeEach(() => {
   removedListeners.length = 0
 })
 
-const SENDER = { tab: { id: 7 }, url: 'https://chatgpt.com/c/abc-123' }
+const SENDER = { tab: { id: 7 } }
 
 function cleanTurn(text: string, carryFrom: string | null) {
   const findings = scan(text).findings
@@ -71,23 +71,23 @@ function cleanTurn(text: string, carryFrom: string | null) {
 }
 
 describe('the session key', () => {
-  it('is which tab and which conversation', () => {
-    expect(hydration.sessionKeyFrom(SENDER)).toBe('7:/c/abc-123')
+  it('is the tab, and only the tab', () => {
+    expect(hydration.sessionKeyFrom(SENDER)).toBe('7')
   })
 
-  it('drops the query string and the fragment', () => {
-    // This project never lets a page hand over a URL — the metrics envelope
-    // reduces one to its registrable domain, because a full URL is content.
-    // A chat id in the path is an opaque handle; `?q=our+acquisition` is not.
-    const key = hydration.sessionKeyFrom({
-      tab: { id: 7 },
-      url: 'https://chatgpt.com/c/abc-123?q=our+acquisition#top',
-    })
-    expect(key).toBe('7:/c/abc-123')
+  it('does not change when the app rewrites its own URL', () => {
+    // The bug this replaced: the key included the pathname, and ChatGPT starts
+    // a conversation at `/` then rewrites the URL to `/c/<id>` *after* the
+    // first message is sent. Stand-ins were filed under one key and looked up
+    // under another, so the panel came up empty for exactly the conversation
+    // that had just been cleaned.
+    const before = hydration.sessionKeyFrom({ tab: { id: 7 } })
+    const after = hydration.sessionKeyFrom({ tab: { id: 7 } })
+    expect(after).toBe(before)
   })
 
   it('is null without a tab, because a content script cannot know its own', () => {
-    expect(hydration.sessionKeyFrom({ url: 'https://chatgpt.com/c/x' })).toBeNull()
+    expect(hydration.sessionKeyFrom({})).toBeNull()
   })
 })
 
@@ -197,25 +197,23 @@ describe('lifetime', () => {
     expect(await hydration.loadSession('gone')).toBeNull()
   })
 
-  it('drops a tab’s conversations when the tab closes, and only that tab’s', async () => {
+  it('drops a tab’s vault when the tab closes, and only that tab’s', async () => {
     const mine: Replacement[] = [
       { finding: { value: 'Jane Doe', category: 'PERSON' }, replacement: 'Person_001' },
     ] as Replacement[]
-    await hydration.recordSubstitutions('7:/c/one', mine)
-    await hydration.recordSubstitutions('7:/c/two', mine)
-    await hydration.recordSubstitutions('9:/c/other', mine)
+    await hydration.recordSubstitutions('7', mine)
+    await hydration.recordSubstitutions('70', mine)
+    await hydration.recordSubstitutions('9', mine)
 
     hydration.watchTabs()
     expect(removedListeners).toHaveLength(1)
     removedListeners[0](7)
-    await vi.waitFor(async () =>
-      expect(await hydration.loadSession('7:/c/one')).toBeNull(),
-    )
+    await vi.waitFor(async () => expect(await hydration.loadSession('7')).toBeNull())
 
-    // A conversation the user closed is one they are done with, and these
-    // mappings are the only place their real names are held.
-    expect(await hydration.loadSession('7:/c/two')).toBeNull()
-    expect(await hydration.loadSession('9:/c/other')).not.toBeNull()
+    // Exactly that tab. A prefix match on `vault:7` would also take `vault:70`,
+    // silently emptying an unrelated conversation.
+    expect(await hydration.loadSession('70')).not.toBeNull()
+    expect(await hydration.loadSession('9')).not.toBeNull()
   })
 
   it('does not throw when there is no session storage at all', async () => {

@@ -75,7 +75,60 @@ const VERSION = '0.1.0'
 /** Rolling window for latency percentiles. Counts only, never content. */
 const LATENCY_SAMPLES = 200
 
-const metrics: Metrics = { ...EMPTY_METRICS, latencies: [] }
+/**
+ * The popup's counters.
+ *
+ * Held in `storage.session` and not merely in this worker, because MV3
+ * terminates the worker after roughly thirty seconds idle — which is most of
+ * the time between prompts. Kept in memory alone, the counters reset to zero
+ * whenever the user is not actively typing, so the popup showed zeros after
+ * a conversation that had plainly been checked.
+ *
+ * `storage.session` rather than `storage.local`: these are session counts,
+ * and this extension writes nothing to disk.
+ */
+const METRICS_KEY = 'metrics'
+
+let metrics: Metrics = { ...EMPTY_METRICS, latencies: [] }
+
+/** Restored before the first message is answered; zeros until then. */
+const metricsReady = (async () => {
+  try {
+    const area = (runtime.storage as { session?: chrome.storage.StorageArea })?.session
+    const bag = (await area?.get(METRICS_KEY)) as { metrics?: Metrics } | undefined
+    if (bag?.metrics) metrics = { ...EMPTY_METRICS, ...bag.metrics }
+  } catch {
+    // Starting from zero is the harmless failure.
+  }
+})()
+
+/**
+ * Written back on a short timer rather than on every increment.
+ *
+ * A counter bump happens on the path that has to stay imperceptible, and
+ * `storage.session` is an async IPC — so writes are coalesced. Losing the last
+ * two seconds of counts to an eviction costs a number in a popup; paying for
+ * a round trip per keystroke costs the thing the product is for.
+ */
+let flushTimer: ReturnType<typeof setTimeout> | null = null
+
+function persistMetrics(): void {
+  if (flushTimer !== null) return
+  flushTimer = setTimeout(() => {
+    flushTimer = null
+    void (async () => {
+      try {
+        const area = (runtime.storage as { session?: chrome.storage.StorageArea })
+          ?.session
+        await area?.set({ [METRICS_KEY]: metrics })
+      } catch {
+        // See above: a lost counter is not worth reporting.
+      }
+    })()
+  }, 2000)
+  const handle = flushTimer as unknown as { unref?: () => void }
+  handle.unref?.()
+}
 
 /**
  * Performance metrics for the escalation path, on this device only.
@@ -126,6 +179,7 @@ watchTabs()
 function record(ms: number) {
   metrics.latencies.push(ms)
   if (metrics.latencies.length > LATENCY_SAMPLES) metrics.latencies.shift()
+  persistMetrics()
 }
 
 /**
@@ -241,6 +295,7 @@ function ensureOffscreen(): Promise<boolean> {
  */
 async function deepCheck(request: DeepCheckRequest): Promise<DeepCheckResponse> {
   metrics.escalations += 1
+  persistMetrics()
 
   if (await ensureOffscreen()) {
     const relayed = await new Promise<DeepCheckResponse | null>((resolve) => {
@@ -421,6 +476,9 @@ async function attachment(request: AttachmentRequest): Promise<AttachmentRespons
   if (relayed.decision === 'warn') metrics.warned += 1
   if (relayed.decision === 'block') metrics.blocked += 1
   if (relayed.cleaned) metrics.sanitized += 1
+  // This path never called `record`, so it never persisted — an attachment
+  // was checked and the popup still said zero.
+  persistMetrics()
 
   return relayed
 }
@@ -436,8 +494,10 @@ runtime.runtime.onMessage.addListener(
           sendResponse(check(message))
           return false
         case 'status':
-          sendResponse(status())
-          return false
+          // Held open until the counters are back from storage: answering
+          // synchronously here is what showed zeros after an eviction.
+          void metricsReady.then(() => sendResponse(status()))
+          return true
         case 'config':
           // Synchronous: the content script asks once at load and must not
           // wait on a round trip before it can decide whether to hold a send.

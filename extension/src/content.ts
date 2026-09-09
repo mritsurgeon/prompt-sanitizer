@@ -7,7 +7,7 @@ import {
   type PromptTarget,
 } from './adapters'
 import { runtime } from './browser'
-import { APP_ORIGINS } from './config'
+import { APP_ORIGINS, MIN_CHARS } from './config'
 import { installFileInterceptors, type FileGuardDeps } from './files'
 import { listenFirst } from './listen'
 import {
@@ -55,21 +55,6 @@ import type {
 
 const adapter = adapterFor(location.hostname)
 
-/**
- * Below this, there is nothing the engine could find.
- *
- * It was 12, chosen as a round number, and 12 hides real findings: the
- * shortest text the engine can flag is a five-character email address
- * (`a@b.c`), so "what domain is x@y.com?" was going through the submit
- * boundary unchecked. Sending an address on its own is a perfectly ordinary
- * prompt.
- *
- * Four, so it sits below the shortest thing that can be found rather than at
- * it — a future rule could be shorter, and `content.test.ts` asserts this stays
- * under the engine's real minimum so that a shorter rule fails the build
- * instead of silently slipping past the gate.
- */
-export const MIN_CHARS = 4
 
 /**
  * Diagnostics.

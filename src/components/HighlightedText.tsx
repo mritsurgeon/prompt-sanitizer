@@ -67,8 +67,28 @@ export function HighlightedText({
             }}
           >
             {chunk}
+            {/*
+              Opens downward, and it has to.
+
+              At `-top-5` this sat 1.25rem above the mark, which is in the
+              previous line's space — and for the first visible line, outside
+              the scroll container wrapping this text
+              (`max-h-[26rem] overflow-auto` in `ReviewStage`). An absolutely
+              positioned child with a negative offset is clipped by an
+              `overflow` ancestor, so the label was invisible for the top row
+              of findings: exactly the row a reader looks at first.
+
+              Below instead. It overlaps the following line slightly, which is
+              a transient hover state on an opaque background and reads fine;
+              being clipped away entirely does not.
+
+              Left as CSS rather than promoted to a portalled tooltip because
+              a document can produce hundreds of these marks, and a tooltip
+              instance apiece is a great deal of machinery for a hover label —
+              the `title` on the mark already carries the same text natively.
+            */}
             <span
-              className="pointer-events-none absolute -top-5 left-0 z-10 rounded-md px-1.5 py-0.5 text-[0.6rem] font-semibold tracking-wider whitespace-nowrap uppercase opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+              className="pointer-events-none absolute top-full left-0 z-10 mt-0.5 rounded-md px-1.5 py-0.5 text-[0.6rem] font-semibold tracking-wider whitespace-nowrap uppercase opacity-0 transition-opacity duration-150 group-hover:opacity-100"
               style={{
                 background: `color-mix(in oklch, ${hit.tone} 88%, black)`,
                 color: 'white',

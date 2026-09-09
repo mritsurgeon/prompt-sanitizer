@@ -42,30 +42,29 @@ export interface StoredSession {
 const keyFor = (id: string) => `${PREFIX}${id}`
 
 /**
- * The session key: which tab, and which conversation inside it.
+ * The session key: the tab, and only the tab.
  *
- * Derived in the worker from `sender`, never sent by the page. Two reasons: a
- * content script cannot know its own tab id, and this project deliberately
- * never lets a page hand over a URL — the metrics envelope reduces one to its
- * registrable domain because a full URL is content.
+ * It used to include the pathname, on the reasoning that a chat id lives there
+ * and distinguishes one conversation from another inside a tab. That was
+ * wrong, and wrong in the ordinary case: ChatGPT starts a new conversation at
+ * `/` and rewrites the URL to `/c/<id>` **after the first message is sent**.
+ * So the stand-ins were filed under `7:/` and looked up under `7:/c/abc`, and
+ * the panel came up empty for exactly the conversation that had just been
+ * cleaned.
  *
- * The pathname is kept because a chat id lives there and is what makes turn
- * two the same conversation as turn one. The query string and fragment are
- * dropped: those are where content ends up.
+ * Tab-scoped satisfies both things the key is for — stand-ins do not cross
+ * between tabs, and they survive from one turn to the next — and it cannot be
+ * broken by an app navigating itself. The cost is that two conversations in
+ * one tab share a vault, which is the same person in the same session, and
+ * strictly safer than losing the mappings.
+ *
+ * Still derived in the worker from `sender`, never sent by the page: a content
+ * script cannot know its own tab id, and this project does not let a page hand
+ * over a URL.
  */
-export function sessionKeyFrom(sender: {
-  tab?: { id?: number }
-  url?: string
-}): string | null {
+export function sessionKeyFrom(sender: { tab?: { id?: number } }): string | null {
   const tabId = sender.tab?.id
-  if (typeof tabId !== 'number') return null
-  let path = ''
-  try {
-    path = sender.url ? new URL(sender.url).pathname : ''
-  } catch {
-    path = ''
-  }
-  return `${tabId}:${path}`
+  return typeof tabId === 'number' ? String(tabId) : null
 }
 
 async function sessionStore(): Promise<chrome.storage.StorageArea | null> {
@@ -186,8 +185,8 @@ export async function evictSession(id: string): Promise<void> {
  * Drop a tab's vaults when the tab closes.
  *
  * A conversation the user has closed is one they are done with, and the
- * mappings are the only place their real names are held. Keyed by prefix
- * because one tab can hold several conversations over its life.
+ * mappings are the only place their real names are held. One key per tab, so
+ * an exact removal — a prefix match on `vault:7` would also catch `vault:70`.
  */
 export function watchTabs(): void {
   try {
@@ -195,11 +194,7 @@ export function watchTabs(): void {
       void (async () => {
         const store = await sessionStore()
         if (!store) return
-        const all = (await store.get(null)) as Record<string, unknown>
-        const stale = Object.keys(all).filter((key) =>
-          key.startsWith(`${PREFIX}${tabId}:`),
-        )
-        if (stale.length) await store.remove(stale)
+        await store.remove(keyFor(String(tabId)))
       })()
     })
   } catch {
