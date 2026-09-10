@@ -293,6 +293,24 @@ function ensureOffscreen(): Promise<boolean> {
  * 47/48, and GLiNER's one miss is a person relabelled as an organisation — the
  * value is still detected and still redacted.
  */
+/**
+ * Say it once, and say which failure it was.
+ *
+ * The model lives in the offscreen document and nowhere else, so when the
+ * relay does not answer, stage two runs here — correctly, but without the
+ * model, and every recovered name the model would have found is silently
+ * absent. That is precisely the failure this project says it will not have:
+ * a confirmer that has stopped running looks exactly like one that is
+ * working, and the findings quietly get worse.
+ */
+const announced = new Set<string>()
+
+function announce(key: string, message: string): void {
+  if (announced.has(key)) return
+  announced.add(key)
+  console.warn(`[ai-safe] ${message}`)
+}
+
 async function deepCheck(request: DeepCheckRequest): Promise<DeepCheckResponse> {
   metrics.escalations += 1
   persistMetrics()
@@ -305,9 +323,24 @@ async function deepCheck(request: DeepCheckRequest): Promise<DeepCheckResponse> 
       }
       try {
         runtime.runtime.sendMessage(message, (response: DeepCheckResponse) => {
-          resolve(runtime.runtime.lastError ? null : (response ?? null))
+          const failure = runtime.runtime.lastError
+          if (failure) {
+            announce(
+              'offscreen-silent',
+              `the offscreen document did not answer (${failure.message ?? 'no reason given'}), ` +
+                `so the closer look ran WITHOUT the model. Open it from ` +
+                `chrome://extensions → Inspect views → offscreen.html; if the ` +
+                `page threw while loading, its listener never registered.`,
+            )
+          }
+          resolve(failure ? null : (response ?? null))
         })
-      } catch {
+      } catch (cause) {
+        announce(
+          'offscreen-throw',
+          `relaying to the offscreen document threw, so the closer look ran ` +
+            `WITHOUT the model: ${cause instanceof Error ? cause.message : cause}`,
+        )
         resolve(null)
       }
     })
@@ -316,7 +349,15 @@ async function deepCheck(request: DeepCheckRequest): Promise<DeepCheckResponse> 
       record(relayed.ms)
       return relayed
     }
-    // Fall through and answer here rather than leaving the user with nothing.
+    // Fall through and answer here rather than leaving the user with nothing —
+    // but the warning above has already said the model was not involved.
+  } else {
+    announce(
+      'offscreen-absent',
+      `there is no offscreen document, so the closer look runs in the worker ` +
+        `WITHOUT the model. Expected on Firefox; on Chrome it means ` +
+        `createDocument failed.`,
+    )
   }
 
   const result = await runDeepCheck(request.text)
