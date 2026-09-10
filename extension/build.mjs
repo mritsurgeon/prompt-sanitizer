@@ -123,9 +123,32 @@ const CSP = {
  */
 const STAMP = new Date().toISOString().slice(0, 16).replace('T', ' ')
 
+/**
+ * Cross-origin isolation for the extension's own pages.
+ *
+ * The offscreen document runs the model, and the threaded ONNX runtime needs
+ * `SharedArrayBuffer`, which needs an isolated context. An MV3 extension page
+ * is isolated only if the manifest says so — these two keys are the whole
+ * mechanism. Without them the offscreen document has no `SharedArrayBuffer`,
+ * and asking for threads there hangs the load rather than running slower.
+ *
+ * The cost is coupled and worth stating: under `require-corp`, every
+ * cross-origin subresource the page fetches must opt in. The model weights
+ * come from the app's origin, so **whatever serves them must send
+ * `Cross-Origin-Resource-Policy: cross-origin`** — `vite.config.ts` does for
+ * dev and preview, and a production host has to be configured to. If it does
+ * not, the fetch is blocked and the confirmer degrades to deep-context, which
+ * `confirmedBy` reports.
+ */
+const ISOLATION = {
+  cross_origin_embedder_policy: { value: 'require-corp' },
+  cross_origin_opener_policy: { value: 'same-origin' },
+}
+
 const MANIFESTS = {
   chrome: {
     ...BASE,
+    ...ISOLATION,
     // Chrome-only; Firefox warns on unknown keys, so it stays out of that one.
     version_name: `${BASE.version} (built ${STAMP})`,
     // `offscreen` gives the second-stage model somewhere to stay resident. A

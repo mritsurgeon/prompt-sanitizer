@@ -54,6 +54,38 @@ describe('the offscreen document asks for a backend it has', () => {
   })
 })
 
+describe('threads are declared, not assumed', () => {
+  const build = read('../../build.mjs')
+  const vite = readFileSync(new URL('../../../vite.config.ts', import.meta.url), 'utf8')
+  const gliner = readFileSync(
+    new URL('../../../src/engine/confirm/gliner.ts', import.meta.url),
+    'utf8',
+  )
+
+  it('asks for threads only where the context can provide them', () => {
+    // `multiThread: true` hardcoded is what makes a non-isolated context hang
+    // rather than run slower: the threaded runtime needs SharedArrayBuffer,
+    // and without cross-origin isolation the load never resolves.
+    expect(gliner).toMatch(/multiThread:\s*threaded/)
+    expect(gliner).toContain('crossOriginIsolated')
+  })
+
+  it('isolates the extension pages, or the offscreen document has no threads', () => {
+    // An MV3 page is cross-origin isolated only if the manifest says so.
+    expect(build).toContain('cross_origin_embedder_policy')
+    expect(build).toContain('cross_origin_opener_policy')
+  })
+
+  it('serves the weights with CORP, which the extension’s COEP requires', () => {
+    // Coupled on purpose: under `require-corp` the offscreen document cannot
+    // fetch the model from the app's origin unless that origin opts in.
+    expect(vite).toContain('Cross-Origin-Resource-Policy')
+    expect(vite).toContain('Cross-Origin-Embedder-Policy')
+    // `server` is dev only; the built app needs it too.
+    expect(vite).toMatch(/preview:\s*\{\s*headers/)
+  })
+})
+
 describe('the confirmer reports which backend ran', () => {
   it('has a runtime getter, so the envelope can say more than "none"', async () => {
     const { createGlinerConfirmer } = await import('@/engine/confirm/gliner')

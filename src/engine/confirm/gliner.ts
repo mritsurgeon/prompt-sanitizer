@@ -149,6 +149,25 @@ function hasWebGPU(): boolean {
   return typeof navigator !== 'undefined' && 'gpu' in navigator
 }
 
+/**
+ * Can this context actually run WASM threads?
+ *
+ * `onnxruntime-web`'s threaded build needs `SharedArrayBuffer`, which needs
+ * cross-origin isolation — `Cross-Origin-Opener-Policy: same-origin` plus
+ * `Cross-Origin-Embedder-Policy: require-corp`. Asking for threads without it
+ * does not degrade politely: the load hangs rather than falling back, so the
+ * confirmer never resolves and the scan waits out its budget.
+ *
+ * Checked rather than assumed, because the contexts differ. The Vite dev
+ * server sends those headers; a plain static host does not. An MV3 extension
+ * page is isolated only if the manifest declares both keys. So the same code
+ * runs threaded in one place and single-threaded in another, and the envelope
+ * has to say which.
+ */
+function isIsolated(): boolean {
+  return typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated === true
+}
+
 const isNode =
   typeof process !== 'undefined' &&
   process.versions?.node != null &&
@@ -279,6 +298,8 @@ export function createGlinerConfirmer(
       transformers.env.allowLocalModels = true
       transformers.env.localModelPath = config.basePath
 
+      const threaded = isIsolated()
+
       const build = async (ep: 'wasm' | 'webgpu') => {
         const instance = new Gliner({
           tokenizerPath: variant.modelName,
@@ -292,7 +313,10 @@ export function createGlinerConfirmer(
                 // Explicit, because gliner's default is a jsDelivr CDN URL and
                 // a scan must never depend on a third party being reachable.
                 wasmPaths: config.wasmPaths,
-                multiThread: true,
+                // Only where the context can actually provide them. Hardcoded
+                // `true` is what makes a non-isolated context hang instead of
+                // simply running slower.
+                multiThread: threaded,
               },
           maxWidth: config.maxWidth,
           modelType: 'span-level',
@@ -329,7 +353,16 @@ export function createGlinerConfirmer(
       for (const ep of isNode ? (['wasm'] as const) : wanted) {
         try {
           instance = await build(ep)
-          provider = isNode ? 'none' : ep === 'webgpu' ? 'webgpu' : 'wasm-threaded'
+          // Reported truthfully, including the thread count: a run labelled
+          // `wasm-threaded` that was actually single-threaded would make the
+          // whole WASM-versus-WebGPU comparison worthless.
+          provider = isNode
+            ? 'none'
+            : ep === 'webgpu'
+              ? 'webgpu'
+              : threaded
+                ? 'wasm-threaded'
+                : 'wasm-single'
           break
         } catch (cause) {
           firstFailure ??= cause
