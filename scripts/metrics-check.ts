@@ -33,6 +33,18 @@ const CLEAN = 'why did this backup fail and what should I check'
  * runtime. The point here is the seam, not the model: a confirmer that reports
  * a runtime is what makes `ep` and `labelCount` observable, and this reports
  * one.
+ *
+ * The values below mirror what the offscreen document really reports, and
+ * that is not cosmetic. This harness used to say `wasm-threaded` with two
+ * labels — neither of which any host produces — and the summary printed it
+ * under "ep distribution" as though it had been measured. Anyone reading
+ * that after the MV3 threading failures would have concluded threads were
+ * on. A stub is allowed to be a stub; it is not allowed to report something
+ * the real thing cannot.
+ *
+ * What checks these for real is `npm run check:model`, which loads the
+ * actual confirmer and asserts `ep === 'wasm-single'` against a live runtime.
+ * Nothing here can, and nothing here should pretend to.
  */
 function fakeModel(latencyMs: number): LocalModelDetector {
   let loaded = false
@@ -40,7 +52,7 @@ function fakeModel(latencyMs: number): LocalModelDetector {
     id: 'harness-model',
     label: 'Harness model',
     cost: { bytes: 1_000_000, startupMs: null, perCandidateMs: null },
-    runtime: { ep: 'wasm-threaded', labelCount: 2, tokenCountBucket: 128 },
+    runtime: { ep: 'wasm-single', labelCount: 3, tokenCountBucket: 128 },
     get loaded() {
       return loaded
     },

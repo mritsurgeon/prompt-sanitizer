@@ -62,10 +62,13 @@ await build({
   // `stdin` with an explicit `resolveDir`, so the bare specifiers resolve
   // from the project rather than from wherever the output happens to sit.
   stdin: {
-    contents:
-      `export { Gliner } from 'gliner'\n` +
-      `export { env } from '@xenova/transformers'\n` +
-      `export * as ort from 'onnxruntime-web'\n`,
+    // The engine's confirmer, not `gliner` directly. Driving gliner proves
+    // gliner works; the thing that kept breaking is the wrapper — which
+    // execution provider it asks for, whether it writes `numThreads` to the
+    // module the runtime actually reads, and whether it reports back what
+    // ran. `ep` was `'none'` for the extension's whole life while the model
+    // was believed to be running, so the check has to read it.
+    contents: `export { createGlinerConfirmer } from '@/engine/confirm/gliner'\n`,
     resolveDir: root,
     sourcefile: 'model-smoke-entry.mjs',
   },
@@ -77,6 +80,7 @@ await build({
   // The same three aliases `build.mjs` applies. If those drift from these,
   // this check stops describing the extension.
   alias: {
+    '@': join(root, 'src'),
     'onnxruntime-web/webgpu': join(root, 'extension/src/ort-stub.ts'),
     'onnxruntime-web/webgl': join(root, 'extension/src/ort-stub.ts'),
     'onnxruntime-web': join(GLINER_ORT, 'dist/ort.bundle.min.mjs'),
@@ -115,53 +119,85 @@ const origin = `http://127.0.0.1:${server.address().port}`
 
 let failure = null
 try {
-  const mod = await import(pathToFileURL(bundle).href)
+  /**
+   * `window`, so the confirmer takes its browser path.
+   *
+   * `gliner.ts` decides between `gliner/node` + onnxruntime-node and
+   * `gliner` + onnxruntime-web on `typeof window === 'undefined'`. Left
+   * alone under Node it would exercise the path that has never broken, and
+   * report `ep: 'none'` while doing it. Defining `window` is the whole
+   * reason this check can see the browser branch at all.
+   */
+  globalThis.window ??= globalThis
 
-  // On the bundle's own instances. Reaching for a separately-imported copy
-  // sets the flag on an object the runtime never reads — which is exactly
-  // how `multiThread: false` managed to be a no-op in the extension.
-  const ort = mod.ort.default ?? mod.ort
-  ort.env.wasm.numThreads = 1
-  ort.env.wasm.wasmPaths = `${origin}/wasm/`
-
-  mod.env.allowRemoteModels = true
-  mod.env.allowLocalModels = false
-  mod.env.remoteHost = `${origin}/models/`
-  mod.env.remotePathTemplate = '{model}'
-  mod.env.useBrowserCache = false
-  mod.env.useFSCache = false
-
-  const started = Date.now()
-  const gliner = new mod.Gliner({
-    tokenizerPath: 'gliner-small',
-    onnxSettings: {
-      modelPath: `${origin}/models/gliner-small/onnx/model.onnx`,
-      executionProvider: 'wasm',
-      wasmPaths: `${origin}/wasm/`,
-      multiThread: false,
-    },
-    maxWidth: 12,
-    modelType: 'span-level',
-    transformersSettings: { allowLocalModels: false, useBrowserCache: false },
-  })
-  await gliner.initialize()
-  const loadMs = Date.now() - started
-
-  const [spans] = await gliner.inference({
-    texts: [SENTENCE],
-    entities: ['person', 'organization', 'location'],
-    threshold: 0.45,
-    flatNer: true,
-  })
-
-  console.log(`\nloaded in ${(loadMs / 1000).toFixed(1)}s, ${spans.length} spans:`)
-  for (const s of spans) {
-    console.log(`  ${s.label.padEnd(13)} ${JSON.stringify(s.spanText).padEnd(21)} ${s.score.toFixed(3)}`)
+  /**
+   * A no-op Cache API, because declaring `window` has consequences.
+   *
+   * The confirmer passes `useBrowserCache: !isNode` to gliner, so the
+   * browser branch asks transformers.js to cache the tokenizer in the Cache
+   * API — which Node does not have. `match` returning nothing means every
+   * request falls through to `fetch`, which is what this check wants anyway:
+   * a cold load every run, against the server below.
+   */
+  globalThis.caches ??= {
+    open: async () => ({ match: async () => undefined, put: async () => {} }),
   }
 
-  const found = new Set(spans.filter((s) => s.label === 'person').map((s) => s.spanText.trim()))
-  const missing = EXPECTED.filter((name) => !found.has(name))
-  if (missing.length) failure = `the model did not find: ${missing.join(', ')}`
+  const { createGlinerConfirmer } = await import(pathToFileURL(bundle).href)
+
+  // The offscreen document's configuration, verbatim.
+  const confirmer = createGlinerConfirmer({
+    basePath: `${origin}/models/`,
+    modelName: 'gliner-small',
+    modelFile: `${origin}/models/gliner-small/onnx/model.onnx`,
+    wasmPaths: `${origin}/wasm/`,
+    executionProvider: 'wasm',
+    multiThread: false,
+  })
+
+  if (!(await confirmer.isAvailable())) throw new Error('the confirmer reports no checkpoint')
+
+  const started = Date.now()
+  await confirmer.load()
+  const loadMs = Date.now() - started
+
+  const { ep, labelCount } = confirmer.runtime
+  console.log(`\nloaded in ${(loadMs / 1000).toFixed(1)}s  ·  ep ${ep}  ·  ${labelCount} labels`)
+
+  // One window, one candidate per name, exactly as `windowsFor` builds them.
+  const candidates = EXPECTED.map((value, i) => ({
+    id: `c${i}`,
+    value,
+    category: 'PERSON',
+    window: SENTENCE,
+    offset: SENTENCE.indexOf(value),
+    windowStart: 0,
+    unresolved: true,
+  }))
+
+  const decisions = await confirmer.confirm(candidates)
+  for (const d of decisions) {
+    const name = candidates.find((c) => c.id === d.id)?.value
+    console.log(
+      `  ${String(d.decision).padEnd(8)} ${JSON.stringify(name).padEnd(21)} ${d.confidence.toFixed(3)}`,
+    )
+  }
+
+  const problems = []
+
+  // `wasm-single`, not merely "something": `wasm-threaded` here would mean
+  // `numThreads` was written to a module the runtime does not read, which is
+  // how the MV3 blob-worker failures happened.
+  if (ep !== 'wasm-single') problems.push(`ep is ${ep}, expected wasm-single`)
+  if (labelCount !== 3) problems.push(`${labelCount} labels, expected 3`)
+
+  const confirmed = new Set(
+    decisions.filter((d) => d.decision === 'confirm').map((d) => candidates.find((c) => c.id === d.id)?.value),
+  )
+  const missing = EXPECTED.filter((name) => !confirmed.has(name))
+  if (missing.length) problems.push(`not confirmed as people: ${missing.join(', ')}`)
+
+  if (problems.length) failure = problems.join('; ')
 } catch (cause) {
   failure = cause instanceof Error ? `${cause.message}` : String(cause)
 } finally {
