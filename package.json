@@ -27,7 +27,8 @@
     "ext:build": "node extension/build.mjs",
     "ext:dev": "node extension/build.mjs --dev",
     "ext:bench": "node scripts/serve-bench.mjs",
-    "check:ext": "tsx scripts/ext-perf.ts"
+    "check:ext": "tsx scripts/ext-perf.ts",
+    "check:model": "node scripts/model-smoke.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

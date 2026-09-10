@@ -157,49 +157,104 @@ describe('the offscreen document only touches APIs it has', () => {
   })
 })
 
-describe('the runtime is shipped the binary it will ask for', () => {
+describe('the extension bundles the runtime gliner was written against', () => {
   const build = read('../../build.mjs')
-  const offscreen = read('../offscreen.ts')
-  const dist = new URL('../../../node_modules/onnxruntime-web/dist/', import.meta.url)
+  const root = new URL('../../../', import.meta.url)
+  const json = (path: string) =>
+    JSON.parse(readFileSync(new URL(path, root), 'utf8')) as Record<string, never>
 
   /**
-   * ORT picks one of four `.wasm` files at init from two booleans, and the
-   * extension ships exactly one of them. Nothing connects the two: the build
-   * hardcodes a name, the runtime computes one, and when they disagree the
-   * fetch 404s. Under `chrome-extension://` that surfaces as
-   * `TypeError: Failed to fetch`, which ORT rethrows as `no available backend
-   * found` — by then the filename is three layers out of sight.
+   * Two ONNX runtimes live in this tree and only one of them works.
    *
-   * That is what happened. Pinning `numThreads` to 1 flipped the `threaded`
-   * boolean, the runtime started asking for `ort-wasm-simd.wasm`, and the
-   * build was still copying `ort-wasm-simd-threaded.wasm`.
+   * `@xenova/transformers` pins `onnxruntime-web@1.14.0` and npm hoists it;
+   * `gliner` requires `1.19.2`, which stays nested. Nothing declares the
+   * package directly, so `node_modules/onnxruntime-web` is transformers'
+   * copy — and the build alias pointed at it, handing gliner a runtime five
+   * minor versions older than the one it targets.
    *
-   * So the expected name is re-derived here from the runtime's own selector
-   * rather than written down a second time.
+   * They differ exactly where gliner touches. It builds int64 tensors from
+   * plain number arrays, which 1.19 maps through `BigInt` and 1.14 does not:
+   * `BigInt64Array.from([1, …])` throws `Cannot convert 1 to a BigInt`, and
+   * every escalation fell back to the deterministic confirmer.
+   *
+   * Node and the dev server never reproduced it, because ordinary resolution
+   * gives gliner its own copy. Only the alias overrode that, so the model
+   * worked everywhere except the one place it was meant to run.
    */
-  const selector =
-    /\(([a-z]),([a-z])\)=>\2\?\1\?"([\w.-]+)":"([\w.-]+)":\1\?"([\w.-]+)":"([\w.-]+)"/.exec(
-      readFileSync(new URL('ort.wasm.min.js', dist), 'utf8'),
+  const required = (json('node_modules/gliner/package.json').dependencies as
+    Record<string, string>)['onnxruntime-web']
+
+  it('aliases onnxruntime-web to the copy gliner depends on', () => {
+    expect(build).toContain("join(root, 'node_modules/gliner/node_modules/onnxruntime-web')")
+    // Not the hoisted one. That is the whole bug.
+    expect(build).not.toMatch(/join\(\s*root,\s*'node_modules\/onnxruntime-web/)
+  })
+
+  it('aliases a copy whose version satisfies gliner', () => {
+    const aliased = json(
+      'node_modules/gliner/node_modules/onnxruntime-web/package.json',
+    ).version as unknown as string
+    expect(aliased).toBe(required)
+  })
+
+  it('that copy converts int64 number arrays rather than throwing', async () => {
+    // The behaviour itself, not the version string — a future bump is fine
+    // so long as this still holds.
+    // Specifier built at runtime: the runtime ships no type declarations for
+    // this dist file, and a literal would make `tsc` demand one.
+    const from = new URL(
+      '../../../node_modules/gliner/node_modules/onnxruntime-web/dist/ort.bundle.min.mjs',
+      import.meta.url,
+    ).href
+    const ort = (await import(/* @vite-ignore */ from)) as {
+      Tensor: new (t: string, d: number[], s: number[]) => { data: BigInt64Array }
+    }
+    const tensor = new ort.Tensor('int64', [1, 2, 3], [3])
+    expect([...tensor.data]).toEqual([1n, 2n, 3n])
+  })
+
+  it('copies the wasm binary that runtime names, without writing it down', () => {
+    // The filename moved once already: 1.14 picks between four binaries on
+    // `(simd, numThreads > 1)`, 1.19 ships one. Reading it out of the bundle
+    // means an upgrade cannot silently serve a 404.
+    expect(build).toMatch(/const ORT_WASM = \(await readFile\(/)
+    expect(build).toMatch(/GLINER_ORT, 'dist', ORT_WASM/)
+
+    const runtime = readFileSync(
+      new URL('node_modules/gliner/node_modules/onnxruntime-web/dist/ort.bundle.min.mjs', root),
+      'utf8',
     )
+    const named = /ort-wasm[\w.-]*\.wasm/.exec(runtime)?.[0]
+    expect(named, 'the runtime no longer names a .wasm file').toBeDefined()
+    expect(existsSync(new URL(
+      `node_modules/gliner/node_modules/onnxruntime-web/dist/${named}`, root,
+    ))).toBe(true)
+  })
+})
 
-  const shipped = /const ORT_WASM = '([\w.-]+)'/.exec(build)?.[1]
+describe('the app serves the runtime binary its own JavaScript loads', () => {
+  const provision = readFileSync(
+    new URL('../../../scripts/provision-model.mjs', import.meta.url),
+    'utf8',
+  )
 
-  it('can still find the selector it derives the name from', () => {
-    // Minified source, so this is a shape assumption. If an upgrade breaks it
-    // the right answer is to re-read the selector, not to delete the check —
-    // the alternative is trusting a hardcoded filename again.
-    expect(selector, 'ORT no longer matches the known selector shape').not.toBeNull()
+  /**
+   * The extension is not the only host that copies this file. `provision`
+   * puts a `.wasm` under `public/models/ort/` for the app, and it read from
+   * the hoisted 1.14 package while the app's gliner loads 1.19.
+   *
+   * The emscripten glue and its `.wasm` are one artifact built together, so a
+   * mismatched pair cannot instantiate — and the confirmer catches that and
+   * degrades to deep-context. Silent, and indistinguishable from the model
+   * never having been provisioned. The app looked like it was working.
+   */
+  it('copies from gliner’s runtime, not the hoisted one', () => {
+    expect(provision).toContain("'gliner', 'node_modules', 'onnxruntime-web'")
+    expect(provision).toContain("const wasmSource = join(GLINER_ORT, 'dist', ORT_WASM)")
   })
 
-  it('ships the file the pinned thread count selects', () => {
-    // `threaded` is `numThreads > 1`, and the offscreen document pins it off.
-    expect(offscreen).toMatch(/multiThread:\s*false/)
-    // Group 5 is the (simd, not threaded) arm of the selector.
-    expect(shipped).toBe(selector?.[5])
-    expect(existsSync(new URL(shipped!, dist))).toBe(true)
-  })
-
-  it('does not ship a threaded binary it can never request', () => {
-    expect(shipped).not.toContain('threaded')
+  it('reads the filename out of the runtime rather than hardcoding it', () => {
+    expect(provision).toMatch(/ORT_WASM = \(\s*await readFile\(/)
+    expect(provision).not.toMatch(/const ORT_WASM = '[\w.-]+'/)
   })
 })

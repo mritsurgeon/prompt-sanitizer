@@ -8,7 +8,7 @@
  * -converter`, which consumes the Chrome build unchanged.
  */
 import { build } from 'vite'
-import { mkdir, writeFile, cp } from 'node:fs/promises'
+import { mkdir, writeFile, cp, readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -209,13 +209,45 @@ const ENTRIES = [
  * the WASM-only build, 0.15 MB against 15 MB. It exposes exactly the three
  * things `gliner` touches: `env.wasm`, `InferenceSession` and `Tensor`.
  */
+/**
+ * There are two ONNX runtimes in this tree, and the alias has to name the
+ * right one.
+ *
+ * `@xenova/transformers@2.17.2` pins `onnxruntime-web@1.14.0`, and npm hoists
+ * that to the top level. `gliner@0.0.19` requires `1.19.2`, which stays
+ * nested. Nothing declares `onnxruntime-web` directly, so
+ * `node_modules/onnxruntime-web` is transformers' copy, not gliner's — and
+ * this alias pointed at it, handing gliner a runtime five minor versions
+ * older than the one it was written against.
+ *
+ * They differ in exactly the place gliner touches. It builds int64 tensors
+ * from plain number arrays:
+ *
+ *     new ort.Tensor('int64', data.flat(Infinity), shape)
+ *
+ * 1.19 maps those through `BigInt`:
+ *
+ *     data = typedArrayConstructor.from(arg1, BigInt)
+ *
+ * 1.14 does not — `BigInt64Array.from([1, …])` throws
+ * `TypeError: Cannot convert 1 to a BigInt`, which surfaced as every
+ * escalation failing over to the deterministic confirmer.
+ *
+ * Node and the dev server never saw it: normal resolution gives gliner its
+ * own nested copy, and only this alias overrode that. So the model worked
+ * everywhere except the one place it was supposed to run.
+ *
+ * `ort.bundle.min.mjs` rather than `ort.wasm.min.mjs` because the bundled
+ * build inlines the emscripten glue; the unbundled one dynamically imports
+ * `ort-wasm-simd-threaded.mjs` as a second file at runtime. 0.44 MB either
+ * way once the glue is counted.
+ */
+const GLINER_ORT = join(root, 'node_modules/gliner/node_modules/onnxruntime-web')
+
 const ORT_ALIASES = {
   'onnxruntime-web/webgpu': join(root, 'extension/src/ort-stub.ts'),
   'onnxruntime-web/webgl': join(root, 'extension/src/ort-stub.ts'),
-  'onnxruntime-web': join(
-    root,
-    'node_modules/onnxruntime-web/dist/ort.wasm.min.js',
-  ),
+  'onnxruntime-web': join(GLINER_ORT, 'dist/ort.bundle.min.mjs'),
 }
 
 for (const [name, entry] of ENTRIES) {
@@ -273,42 +305,34 @@ await cp(
  * The ONNX runtime's WebAssembly binary, shipped with the extension.
  *
  * Executable code is not fetched over the network — MV3 forbids it, and it
- * would defeat the point of the CSP. Only the model *weights* are fetched, and
- * only from the origin that provisioned them.
+ * would defeat the point of the CSP. Only the model *weights* are fetched,
+ * and only from the origin that provisioned them.
  *
- * ## Why this exact filename
+ * Copied from `GLINER_ORT`, not from the hoisted top-level package: the two
+ * runtimes in this tree do not agree on these filenames. 1.14 ships four
+ * binaries and picks between them at init on `(simd, numThreads > 1)`;
+ * 1.19 ships one threaded artifact and uses it whatever the thread count.
+ * Serving the wrong name 404s, and a 404 under `chrome-extension://`
+ * arrives as `TypeError: Failed to fetch`, which ORT rethrows as
+ * `no available backend found` — three layers from the cause.
  *
- * The runtime ships four binaries and picks one at init from two booleans:
- *
- * ```js
- * const d = (simd, threaded) =>
- *   threaded ? (simd ? 'ort-wasm-simd-threaded.wasm' : 'ort-wasm-threaded.wasm')
- *            : (simd ? 'ort-wasm-simd.wasm'          : 'ort-wasm.wasm')
- * ```
- *
- * `threaded` is `numThreads > 1`, and the offscreen document pins `numThreads`
- * to 1 because MV3's CSP forbids the `blob:` workers threading needs. So the
- * *threaded* binary — the one this line used to name — became unreachable the
- * moment threading was turned off, and the runtime asked for a file that was
- * not there. A missing file under `chrome-extension://` surfaces as
- * `TypeError: Failed to fetch`, which ORT reports as `no available backend
- * found`: three layers away from the actual cause, which is a filename.
- *
- * Only the SIMD variant is shipped, not both. `simd` is a
- * `WebAssembly.validate` probe that has passed since Chrome 91, and
- * `chrome.offscreen` — without which none of this file's model path exists —
- * requires Chrome 109. The non-SIMD build cannot be reached from here, so
- * 8.8 MB of it would be shipped to be ignored.
- *
- * `backend.test.ts` re-derives this name from the runtime's own selector, so
- * an upgrade that renames the binaries fails a test rather than a browser.
+ * So the name is not written down here at all. It is read out of the
+ * runtime that will ask for it, and `backend.test.ts` checks that the file
+ * copied is the file referenced.
  */
-const ORT_WASM = 'ort-wasm-simd.wasm'
+const ORT_WASM = (await readFile(join(GLINER_ORT, 'dist/ort.bundle.min.mjs'), 'utf8'))
+  .match(/ort-wasm[\w.-]*\.wasm/)?.[0]
+
+if (!ORT_WASM) {
+  throw new Error(
+    'Could not find the .wasm filename inside the ONNX runtime bundle. ' +
+      'An upgrade has changed how it names its binary; check what ' +
+      'dist/ort.bundle.min.mjs now references.',
+  )
+}
+
 await mkdir(join(out, 'wasm'), { recursive: true })
-await cp(
-  join(root, 'node_modules/onnxruntime-web/dist', ORT_WASM),
-  join(out, 'wasm', ORT_WASM),
-)
+await cp(join(GLINER_ORT, 'dist', ORT_WASM), join(out, 'wasm', ORT_WASM))
 
 await mkdir(join(out, 'popup'), { recursive: true })
 await cp(

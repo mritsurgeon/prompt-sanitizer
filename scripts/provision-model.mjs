@@ -10,7 +10,7 @@
  */
 import { createWriteStream } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { copyFile, mkdir, stat } from 'node:fs/promises'
+import { copyFile, mkdir, stat, readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
@@ -25,13 +25,40 @@ const base = 'https://huggingface.co/onnx-community/gliner_small-v2.1/resolve/ma
  *
  * `gliner` defaults `wasmPaths` to a jsDelivr CDN URL, which would make every
  * cold model load a third-party request at scan time — exactly what this
- * project promises never to do. The file is already in node_modules, so this is
- * a copy rather than a download.
+ * project promises never to do. The file is already in node_modules, so this
+ * is a copy rather than a download.
  *
- * Only the SIMD+threaded build is copied. It is the one `gliner` asks for by
- * name, and shipping the other three would be 27 MB of dead weight.
+ * ## From gliner's copy, not the hoisted one
+ *
+ * There are two ONNX runtimes here. `@xenova/transformers@2.17.2` pins
+ * `onnxruntime-web@1.14.0` and npm hoists it to the top level; `gliner`
+ * requires `1.19.2`, which stays nested. Nothing declares the package
+ * directly, so `node_modules/onnxruntime-web` is transformers' copy.
+ *
+ * This line used to read from there, which meant the app served a 1.14
+ * binary to the 1.19 JavaScript that gliner actually loads. The glue and the
+ * `.wasm` are one artifact built together — their imports have to match — so
+ * the pair cannot instantiate, and a failed instantiation is caught and
+ * degraded to the deterministic confirmer. Silent, and indistinguishable
+ * from the model simply not being provisioned.
+ *
+ * The filename is read out of the runtime rather than written down, because
+ * the two versions do not agree on it either: 1.14 picks between four
+ * binaries on `(simd, numThreads > 1)`, 1.19 ships one.
  */
-const ORT_WASM = 'ort-wasm-simd-threaded.wasm'
+const GLINER_ORT = join(root, 'node_modules', 'gliner', 'node_modules', 'onnxruntime-web')
+const ORT_WASM = (
+  await readFile(join(GLINER_ORT, 'dist', 'ort.bundle.min.mjs'), 'utf8')
+).match(/ort-wasm[\w.-]*\.wasm/)?.[0]
+
+if (!ORT_WASM) {
+  throw new Error(
+    'Could not find the .wasm filename inside the ONNX runtime bundle. An ' +
+      'upgrade has changed how it names its binary; check what ' +
+      'dist/ort.bundle.min.mjs now references.',
+  )
+}
+
 const ORT_TARGET = join(root, 'public', 'models', 'ort')
 
 /** int8 weights — the smallest build that keeps full accuracy on our corpus. */
@@ -88,7 +115,7 @@ for (const entry of FILES) {
 
 // The runtime, from node_modules rather than the network.
 await mkdir(ORT_TARGET, { recursive: true })
-const wasmSource = join(root, 'node_modules', 'onnxruntime-web', 'dist', ORT_WASM)
+const wasmSource = join(GLINER_ORT, 'dist', ORT_WASM)
 const wasmTarget = join(ORT_TARGET, ORT_WASM)
 if ((await sizeOf(wasmTarget)) > 0) {
   console.log(`  have  ${`ort/${ORT_WASM}`.padEnd(28)} ${mb(await sizeOf(wasmTarget))}`)
