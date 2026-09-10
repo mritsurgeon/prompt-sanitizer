@@ -258,3 +258,47 @@ describe('the app serves the runtime binary its own JavaScript loads', () => {
     expect(provision).not.toMatch(/const ORT_WASM = '[\w.-]+'/)
   })
 })
+
+describe('only one context has the model, and the rest ask it', () => {
+  const background = read('../background.ts')
+  const offscreen = read('../offscreen.ts')
+
+  /**
+   * `registerLocalModel` is called in the offscreen document and nowhere
+   * else, so an escalation awaited anywhere else silently resolves to the
+   * deterministic confirmer. That is not an error — it returns findings, it
+   * just cannot see the names GLiNER exists to recover.
+   *
+   * Which is how the banner and the rewrite came to disagree about the same
+   * sentence. The check was relayed to the offscreen document and reported
+   * "Closer look caught 2 more"; the cleaning ran `scanWithConfirmation` in
+   * the worker, got stage one's findings back, and masked none of them. Both
+   * halves were working. They were answering in different places.
+   */
+  it('registers the model in exactly one place', () => {
+    expect(offscreen).toContain('registerLocalModel(')
+    // A call, not a mention — the comment in `background.ts` explaining why
+    // it must not register one would otherwise fail this.
+    expect(background).not.toMatch(/registerLocalModel\s*\(/)
+  })
+
+  it('never escalates in the worker, where the model is not', () => {
+    // The worker may `scan` — that is stage one and needs no model. It must
+    // not `scanWithConfirmation`, which looks identical and quietly is not.
+    expect(background).not.toMatch(/scanWithConfirmation\s*\(/)
+  })
+
+  it('relays the rewrite’s findings, not just the banner’s', () => {
+    // Both go through the same relay. If only one did, they could disagree
+    // again — and the disagreement is invisible from either side alone.
+    expect(background).toMatch(/relayToOffscreen<DeepCheckResponse/)
+    expect(background).toMatch(/relayToOffscreen<OffscreenConfirmResponse/)
+  })
+
+  it('answers the confirm relay with offsets, not display text', () => {
+    // `WireFinding` carries a label and a reason but no offsets, so nothing
+    // can be rewritten from it. The confirm reply has to be the real thing.
+    expect(offscreen).toContain("type: 'offscreen-confirm'")
+    expect(offscreen).toMatch(/findings:\s*Finding\[\]/)
+  })
+})

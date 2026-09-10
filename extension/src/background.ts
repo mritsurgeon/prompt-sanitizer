@@ -1,4 +1,5 @@
-import { scan, scanWithConfirmation } from '@/engine/detect'
+import type { Finding } from '@/engine/types'
+import { scan } from '@/engine/detect'
 import { registerMetricsSink } from '@/engine/metrics'
 import { installAllowlist } from './allowlist'
 import { readManaged, resolveManaged, UNMANAGED, type Resolved } from './managed'
@@ -20,8 +21,12 @@ import {
 import { sanitize } from '@/engine/sanitize'
 import { runtime } from './browser'
 import { APP_ORIGIN } from './config'
-import { runDeepCheck, toWire } from './deep'
-import type { OffscreenDeepRequest } from './offscreen'
+import { confirmedFindings, runDeepCheck, toWire } from './deep'
+import type {
+  OffscreenConfirmRequest,
+  OffscreenConfirmResponse,
+  OffscreenDeepRequest,
+} from './offscreen'
 import {
   EMPTY_METRICS,
   MAX_TEXT_BYTES,
@@ -311,73 +316,108 @@ function announce(key: string, message: string): void {
   console.warn(`[ai-safe] ${message}`)
 }
 
+/**
+ * Ask the offscreen document, or answer `null`.
+ *
+ * Shared by everything that needs the model, because the model is only ever
+ * in one place. Anything that answers in the worker instead answers without
+ * it — correctly, and with worse recall — so each caller has to decide what
+ * to do with `null` rather than have a silent fallback chosen for it.
+ */
+async function relayToOffscreen<TResponse, TRequest extends { type: string }>(
+  message: TRequest,
+): Promise<TResponse | null> {
+  if (!(await ensureOffscreen())) {
+    announce(
+      'offscreen-absent',
+      `there is no offscreen document, so the model is unavailable. Expected ` +
+        `on Firefox; on Chrome it means createDocument failed.`,
+    )
+    return null
+  }
+
+  return new Promise<TResponse | null>((resolve) => {
+    try {
+      runtime.runtime.sendMessage(message, (response: TResponse) => {
+        const failure = runtime.runtime.lastError
+        if (failure) {
+          announce(
+            'offscreen-silent',
+            `the offscreen document did not answer (${failure.message ?? 'no reason given'}), ` +
+              `so this ran WITHOUT the model. Open it from ` +
+              `chrome://extensions → Inspect views → offscreen.html; if the ` +
+              `page threw while loading, its listener never registered.`,
+          )
+        }
+        resolve(failure ? null : (response ?? null))
+      })
+    } catch (cause) {
+      announce(
+        'offscreen-throw',
+        `relaying to the offscreen document threw, so this ran WITHOUT the ` +
+          `model: ${cause instanceof Error ? cause.message : cause}`,
+      )
+      resolve(null)
+    }
+  })
+}
+
 async function deepCheck(request: DeepCheckRequest): Promise<DeepCheckResponse> {
   metrics.escalations += 1
   persistMetrics()
 
-  if (await ensureOffscreen()) {
-    const relayed = await new Promise<DeepCheckResponse | null>((resolve) => {
-      const message: OffscreenDeepRequest = {
-        type: 'offscreen-deep-check',
-        text: request.text,
-      }
-      try {
-        runtime.runtime.sendMessage(message, (response: DeepCheckResponse) => {
-          const failure = runtime.runtime.lastError
-          if (failure) {
-            announce(
-              'offscreen-silent',
-              `the offscreen document did not answer (${failure.message ?? 'no reason given'}), ` +
-                `so the closer look ran WITHOUT the model. Open it from ` +
-                `chrome://extensions → Inspect views → offscreen.html; if the ` +
-                `page threw while loading, its listener never registered.`,
-            )
-          }
-          resolve(failure ? null : (response ?? null))
-        })
-      } catch (cause) {
-        announce(
-          'offscreen-throw',
-          `relaying to the offscreen document threw, so the closer look ran ` +
-            `WITHOUT the model: ${cause instanceof Error ? cause.message : cause}`,
-        )
-        resolve(null)
-      }
-    })
+  const relayed = await relayToOffscreen<DeepCheckResponse, OffscreenDeepRequest>({
+    type: 'offscreen-deep-check',
+    text: request.text,
+  })
 
-    if (relayed) {
-      record(relayed.ms)
-      return relayed
-    }
-    // Fall through and answer here rather than leaving the user with nothing —
-    // but the warning above has already said the model was not involved.
-  } else {
-    announce(
-      'offscreen-absent',
-      `there is no offscreen document, so the closer look runs in the worker ` +
-        `WITHOUT the model. Expected on Firefox; on Chrome it means ` +
-        `createDocument failed.`,
-    )
+  if (relayed) {
+    record(relayed.ms)
+    return relayed
   }
 
+  // Answer here rather than leaving the user with nothing — but `announce`
+  // has already said the model was not involved.
   const result = await runDeepCheck(request.text)
   record(result.ms)
   return result
 }
 
 /**
+ * The findings to rewrite from, decided where the model lives.
+ *
+ * Falls back to answering in the worker only when the relay fails, which is
+ * Firefox by design and a broken offscreen document otherwise. The rewrite
+ * is then no worse than stage one, and `announce` has already said so.
+ */
+async function confirmedForClean(text: string): Promise<Finding[]> {
+  const relayed = await relayToOffscreen<OffscreenConfirmResponse, OffscreenConfirmRequest>({
+    type: 'offscreen-confirm',
+    text,
+  })
+  return relayed?.findings ?? (await confirmedFindings(text))
+}
+
+/**
  * Cleaning reuses the app's sanitizer verbatim — placeholders, consistency and
  * all. `deep` re-runs the escalation first so the cleanup acts on the findings
  * the user was actually shown, rather than silently reverting to stage one's.
+ *
+ * "Re-runs" has to mean *in the offscreen document*. `registerLocalModel` is
+ * called there and nowhere else, so an escalation awaited here resolves to
+ * the deterministic confirmer: correct, and blind to the names the model
+ * exists to recover. The banner was relayed and this was not, so the two
+ * disagreed about the same text — "Closer look caught 2 more" above a
+ * rewrite that masked none of them.
  */
 async function clean(
   request: SanitizeRequest,
   sessionId: string | null,
 ): Promise<SanitizeResponse> {
   const started = performance.now()
-  const result = request.deep
-    ? await scanWithConfirmation(request.text, { phase: 'banner' })
-    : scan(request.text)
+  const findings = request.deep
+    ? await confirmedForClean(request.text)
+    : scan(request.text).findings
 
   /**
    * Stand-ins already handed out in this conversation.
@@ -389,7 +429,7 @@ async function clean(
    */
   const carry = sessionId ? pseudonymsFrom(await loadSession(sessionId)) : undefined
 
-  const cleaned = sanitize(request.text, result.findings, {
+  const cleaned = sanitize(request.text, findings, {
     mode: request.mode ?? 'redact',
     carry,
   })

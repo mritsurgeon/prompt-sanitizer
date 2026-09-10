@@ -33,6 +33,31 @@ export function toWire(finding: Finding): WireFinding {
 }
 
 /**
+ * The findings the closer look settled on, in full.
+ *
+ * `runDeepCheck` flattens to `WireFinding`, which is a display shape: it
+ * carries a label and a reason but no offsets, so nothing can be rewritten
+ * from it. Cleaning needs the findings themselves.
+ *
+ * Split out because the worker cannot produce these. `registerLocalModel` is
+ * called in the offscreen document and nowhere else, so an escalation run in
+ * the worker resolves to the deterministic confirmer — correct, but blind to
+ * exactly the names the model exists to recover. The banner was relayed to
+ * the offscreen document and the cleaning was not, so the two disagreed:
+ * "Closer look caught 2 more" above a rewrite that masked none of them.
+ *
+ * Whatever context calls this uses the confirmer registered in it, so the
+ * caller decides by *where* it runs rather than by passing a flag.
+ */
+export async function confirmedFindings(text: string): Promise<Finding[]> {
+  // `banner` rather than a phase of its own: cleaning follows a banner the
+  // user has already read, so the model is warm and the budget that applied
+  // to the check should apply to the rewrite of the same text.
+  const result = await scanWithConfirmation(text, { phase: 'banner' })
+  return result.findings
+}
+
+/**
  * Run the closer look and report what it changed.
  *
  * Only the findings the rules could not settle are examined, and only the

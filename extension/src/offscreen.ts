@@ -4,8 +4,9 @@ import { runtime } from './browser'
 import { APP_ORIGIN } from './config'
 import { installAllowlist } from './allowlist'
 import { reviewAttachment } from './attachment'
-import { runDeepCheck } from './deep'
+import { confirmedFindings, runDeepCheck } from './deep'
 import type { AttachmentRequest, AttachmentResponse, DeepCheckResponse } from './protocol'
+import type { Finding } from '@/engine/types'
 
 /** Substituted by `build.mjs`; see the note beside the `console.info` below. */
 declare const __BUILD_STAMP__: string
@@ -134,6 +135,48 @@ runtime.runtime.onMessage.addListener(
 
     // Held open: parsing a spreadsheet takes far longer than the synchronous
     // reply Chrome would otherwise expect.
+    return true
+  },
+)
+
+/**
+ * Findings for the rewrite, decided here rather than in the worker.
+ *
+ * The worker can run an escalation, but `registerLocalModel` is called in
+ * this file and nowhere else, so what answers there is the deterministic
+ * confirmer. The banner was relayed here and the cleaning was not, which is
+ * how "Closer look caught 2 more" appeared above a rewrite that masked none
+ * of them: two contexts, two different answers about the same text.
+ *
+ * Full `Finding` objects, not the `WireFinding` shape the banner uses —
+ * offsets are what a rewrite needs, and the display shape has none.
+ */
+export interface OffscreenConfirmRequest {
+  type: 'offscreen-confirm'
+  text: string
+}
+
+export interface OffscreenConfirmResponse {
+  type: 'confirmed-findings'
+  findings: Finding[]
+}
+
+runtime.runtime.onMessage.addListener(
+  (
+    message: OffscreenConfirmRequest,
+    _sender,
+    sendResponse: (r: OffscreenConfirmResponse | null) => void,
+  ) => {
+    if (message?.type !== 'offscreen-confirm') return false
+
+    confirmedFindings(message.text).then(
+      (findings) => sendResponse({ type: 'confirmed-findings', findings }),
+      // Null rather than an empty list: the worker has to be able to tell
+      // "the model found nothing" from "this never ran", and answering with
+      // no findings would silently clean less than stage one already had.
+      () => sendResponse(null),
+    )
+
     return true
   },
 )
