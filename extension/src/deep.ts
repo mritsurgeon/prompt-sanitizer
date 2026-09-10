@@ -1,4 +1,5 @@
 import { category } from '@/engine/categories'
+import { getLocalModel, warmUp } from '@/engine/confirm'
 import { scan, scanWithConfirmation } from '@/engine/detect'
 import { evaluate, getPolicy } from '@/engine/policy'
 import { previewReplacement } from '@/engine/sanitize'
@@ -42,6 +43,31 @@ export async function runDeepCheck(text: string): Promise<DeepCheckResponse> {
   const started = performance.now()
   const shallow = scan(text)
   const before = evaluate(shallow, getPolicy())
+
+  /**
+   * Earn the load, then keep it.
+   *
+   * The gate refuses to pay a cold start for recovery candidates alone: a
+   * capitalised word nobody recognises is speculative, and loading weights for
+   * one would put a model on the normal path. That is right, and on its own it
+   * has a hole — the model's whole reason for being here is recall on names no
+   * gazetteer contains, which *is* the recovery path. A cold model is refused
+   * exactly the work it is best at, and only an *ambiguous* finding ever warms
+   * it. A user whose prompts contain unusual names and nothing else never gets
+   * the model at all.
+   *
+   * Observed: a prompt naming Malik Vance and Tariq Al-Mansoor produced zero
+   * ambiguous findings and three recovery candidates, so the model stayed cold
+   * and both names went unmasked.
+   *
+   * So this warms it in the background, and only once something has already
+   * been flagged. Nothing waits on it — the answer below is returned from
+   * whatever confirmer is resident now — but the next prompt has the model,
+   * which is the "speculation must be earned" rule the rest of this codebase
+   * follows: a banner is already on screen, so the cost is spent against time
+   * that was going to pass anyway.
+   */
+  if (!getLocalModel().loaded && shallow.recoverable.length > 0) warmUp()
 
   try {
     // Stage two by definition: the banner is already on screen and nobody is

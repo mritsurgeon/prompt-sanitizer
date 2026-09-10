@@ -91,3 +91,36 @@ describe('what the banner is given', () => {
     )
   })
 })
+
+describe('a cold model is warmed by the work it is best at', () => {
+  /**
+   * The hole the gate leaves.
+   *
+   * Recovery candidates alone do not earn a cold start — a capitalised word
+   * nobody recognises is speculative, and loading weights for one would put a
+   * model on the normal path. Correct, and incomplete: recall on names no
+   * gazetteer contains *is* the recovery path, so a cold model is refused
+   * precisely the work it exists for, and only an ambiguous finding ever warms
+   * it. A user whose prompts hold unusual names and nothing else never gets
+   * the model.
+   *
+   * Observed in a browser: a prompt naming Malik Vance and Tariq Al-Mansoor
+   * produced zero ambiguous findings and three recovery candidates, the model
+   * stayed cold, and both names went unmasked.
+   */
+  it('produces recovery candidates and no ambiguity on exactly that prompt', () => {
+    const prompt =
+      "During yesterday's strategic summit in Zurich, Elena Rostova and Malik " +
+      'Vance finalized the acquisition framework alongside Tariq Al-Mansoor ' +
+      'from the board.'
+    const result = scan(prompt)
+
+    // If this ever gains an ambiguous finding the gate would warm the model by
+    // itself and the warm-up below becomes belt and braces rather than the
+    // only thing standing between the user and a missed name.
+    expect(result.ambiguous).toHaveLength(0)
+    expect(result.recoverable.map((f) => f.value)).toEqual(
+      expect.arrayContaining(['Malik Vance', 'Tariq Al-Mansoor']),
+    )
+  })
+})
