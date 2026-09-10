@@ -302,3 +302,27 @@ describe('only one context has the model, and the rest ask it', () => {
     expect(offscreen).toMatch(/findings:\s*Finding\[\]/)
   })
 })
+
+describe('the runtime binary ships once', () => {
+  const build = read('../../build.mjs')
+
+  /**
+   * `ort.bundle.min.mjs` ends its filename resolution with
+   * `new URL("ort-wasm-simd-threaded.wasm", import.meta.url)`, and Vite
+   * treats that as an asset reference and inlines it as base64 —
+   * `assetsInlineLimit: 0` does not cover this form. A 0.44 MB module became
+   * a 14.6 MB chunk and the unpacked extension went to 29 MB, shipping the
+   * binary twice: base64 inside the JavaScript, and the real file under
+   * `wasm/`.
+   *
+   * The branch is dead — `gliner` always sets `wasmPaths`, which becomes
+   * `locateFile` — so those 14 MB were parsed on every load and never read.
+   *
+   * Only a size check catches this, and nothing about the build fails when
+   * it regresses, so the guard is that the transform is still installed.
+   */
+  it('rewrites the asset URL so Vite cannot inline the wasm', () => {
+    expect(build).toContain('ai-safe:no-inline-ort-wasm')
+    expect(build).toMatch(/plugins:\s*splittable \? \[noInlineWasm\]/)
+  })
+})

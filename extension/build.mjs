@@ -250,6 +250,39 @@ const ORT_ALIASES = {
   'onnxruntime-web': join(GLINER_ORT, 'dist/ort.bundle.min.mjs'),
 }
 
+/**
+ * Stop Vite inlining the 10.5 MB `.wasm` as a base64 data URI.
+ *
+ * `ort.bundle.min.mjs` ends its filename resolution with a fallback:
+ *
+ *     Ze ||= u.locateFile ? …u.locateFile("ort-wasm-simd-threaded.wasm", P)…
+ *                         : new URL("ort-wasm-simd-threaded.wasm", import.meta.url).href
+ *
+ * Vite treats that `new URL(…, import.meta.url)` as an asset reference and
+ * inlines it — `assetsInlineLimit: 0` does not apply to this form — which
+ * turned a 0.44 MB module into a 14.6 MB chunk and made the unpacked
+ * extension 29 MB. The binary was then shipped twice: once as base64 inside
+ * the JavaScript, and once as the real file under `wasm/`.
+ *
+ * The branch is dead. `gliner` always sets `env.wasm.wasmPaths`, which
+ * becomes `locateFile`, so the left arm is always taken and the data URI is
+ * never read — 14 MB parsed on every load to be ignored.
+ *
+ * Rewritten to a bare relative name, which is what the fallback should have
+ * produced anyway: no asset reference for Vite to inline, and if the branch
+ * were ever reached it resolves beside the page rather than throwing.
+ */
+const noInlineWasm = {
+  name: 'ai-safe:no-inline-ort-wasm',
+  enforce: 'pre',
+  transform(code, id) {
+    if (!id.includes('onnxruntime-web')) return null
+    const wanted = 'new URL("ort-wasm-simd-threaded.wasm",import.meta.url).href'
+    if (!code.includes(wanted)) return null
+    return { code: code.replaceAll(wanted, '"ort-wasm-simd-threaded.wasm"'), map: null }
+  },
+}
+
 for (const [name, entry] of ENTRIES) {
   /**
    * The offscreen page is the one entry loaded as a real ES module by an HTML
@@ -269,6 +302,7 @@ for (const [name, entry] of ENTRIES) {
     // app, not the extension, and copying them here would make every build
     // enormous. The extension fetches them from the app's origin instead.
     publicDir: false,
+    plugins: splittable ? [noInlineWasm] : [],
     resolve: {
       alias: { '@': join(root, 'src'), ...(splittable ? ORT_ALIASES : {}) },
     },
