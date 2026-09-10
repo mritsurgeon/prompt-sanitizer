@@ -122,6 +122,24 @@ export interface GlinerOptions {
    */
   executionProvider?: 'wasm' | 'webgpu'
   /**
+   * Whether to run the WASM runtime on threads.
+   *
+   * Stated by the host for the same reason the provider is: the answer depends
+   * on the *context*, and nothing here can see it. Cross-origin isolation is
+   * necessary and not sufficient — an MV3 extension page can be isolated and
+   * still be unable to thread, because ORT spawns its workers from `blob:`
+   * URLs and the MV3 content security policy is `script-src 'self'
+   * 'wasm-unsafe-eval'`, which does not permit them and cannot be widened.
+   *
+   * Observed as `Failed to execute 'importScripts' on 'WorkerGlobalScope'`
+   * followed by inference throwing `Cannot convert 1 to a BigInt` — the
+   * runtime half-initialised with dead workers rather than failing outright.
+   *
+   * Left undefined it follows `crossOriginIsolated`, which is right for the
+   * app: an ordinary page's CSP permits blob workers.
+   */
+  multiThread?: boolean
+  /**
    * Provisioned size of this checkpoint.
    *
    * Not cosmetic: the escalation gate keys on whether a confirmer has weights
@@ -298,7 +316,7 @@ export function createGlinerConfirmer(
       transformers.env.allowLocalModels = true
       transformers.env.localModelPath = config.basePath
 
-      const threaded = isIsolated()
+      const threaded = config.multiThread ?? isIsolated()
 
       const build = async (ep: 'wasm' | 'webgpu') => {
         const instance = new Gliner({

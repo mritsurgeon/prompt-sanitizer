@@ -66,6 +66,25 @@ registerLocalModel(
      * The host knows what the host bundled. Nothing inside the confirmer can.
      */
     executionProvider: 'wasm',
+    /**
+     * Single-threaded, unconditionally.
+     *
+     * Not a performance preference — threading cannot work here. ORT's
+     * threaded build spawns its workers from `blob:` URLs, and the MV3
+     * content security policy for extension pages is
+     * `script-src 'self' 'wasm-unsafe-eval'`, which does not allow them and
+     * which MV3 will not let an extension widen.
+     *
+     * Cross-origin isolation is therefore necessary and not sufficient, and
+     * chasing it here actively hurt: declaring COEP made
+     * `crossOriginIsolated` true, which switched threading *on*, which
+     * produced a run of `importScripts` failures followed by inference
+     * throwing `Cannot convert 1 to a BigInt`. The runtime half-started with
+     * dead workers instead of failing cleanly.
+     *
+     * The app is a different context with an ordinary CSP, and threads there.
+     */
+    multiThread: false,
   }),
 )
 

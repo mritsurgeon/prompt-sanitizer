@@ -124,31 +124,27 @@ const CSP = {
 const STAMP = new Date().toISOString().slice(0, 16).replace('T', ' ')
 
 /**
- * Cross-origin isolation for the extension's own pages.
+ * Cross-origin isolation is deliberately NOT declared.
  *
- * The offscreen document runs the model, and the threaded ONNX runtime needs
- * `SharedArrayBuffer`, which needs an isolated context. An MV3 extension page
- * is isolated only if the manifest says so — these two keys are the whole
- * mechanism. Without them the offscreen document has no `SharedArrayBuffer`,
- * and asking for threads there hangs the load rather than running slower.
+ * It was, briefly, to give the offscreen document `SharedArrayBuffer` so the
+ * ONNX runtime could thread. That is necessary and not sufficient: ORT spawns
+ * its worker threads from `blob:` URLs, and the CSP above is
+ * `script-src 'self' 'wasm-unsafe-eval'` — which does not permit them, and
+ * which MV3 will not let an extension widen.
  *
- * The cost is coupled and worth stating: under `require-corp`, every
- * cross-origin subresource the page fetches must opt in. The model weights
- * come from the app's origin, so **whatever serves them must send
- * `Cross-Origin-Resource-Policy: cross-origin`** — `vite.config.ts` does for
- * dev and preview, and a production host has to be configured to. If it does
- * not, the fetch is blocked and the confirmer degrades to deep-context, which
- * `confirmedBy` reports.
+ * So isolation only switched threading on so that it could fail: a run of
+ * `importScripts` errors, then inference throwing `Cannot convert 1 to a
+ * BigInt`. It also made every cross-origin fetch — including the model
+ * weights from the app's origin — require a `Cross-Origin-Resource-Policy`
+ * header, which is a real deployment constraint bought for nothing.
+ *
+ * The confirmer runs single-threaded here, and says so: the metrics envelope
+ * reports `wasm-single`.
  */
-const ISOLATION = {
-  cross_origin_embedder_policy: { value: 'require-corp' },
-  cross_origin_opener_policy: { value: 'same-origin' },
-}
 
 const MANIFESTS = {
   chrome: {
     ...BASE,
-    ...ISOLATION,
     // Chrome-only; Firefox warns on unknown keys, so it stays out of that one.
     version_name: `${BASE.version} (built ${STAMP})`,
     // `offscreen` gives the second-stage model somewhere to stay resident. A

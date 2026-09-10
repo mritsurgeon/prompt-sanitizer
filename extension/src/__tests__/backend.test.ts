@@ -56,30 +56,39 @@ describe('the offscreen document asks for a backend it has', () => {
 
 describe('threads are declared, not assumed', () => {
   const build = read('../../build.mjs')
+  const offscreen = read('../offscreen.ts')
   const vite = readFileSync(new URL('../../../vite.config.ts', import.meta.url), 'utf8')
   const gliner = readFileSync(
     new URL('../../../src/engine/confirm/gliner.ts', import.meta.url),
     'utf8',
   )
 
-  it('asks for threads only where the context can provide them', () => {
-    // `multiThread: true` hardcoded is what makes a non-isolated context hang
-    // rather than run slower: the threaded runtime needs SharedArrayBuffer,
-    // and without cross-origin isolation the load never resolves.
+  it('lets the host decide, rather than hardcoding threads on', () => {
+    // `multiThread: true` hardcoded is what made a context that cannot thread
+    // fail instead of simply running slower.
     expect(gliner).toMatch(/multiThread:\s*threaded/)
-    expect(gliner).toContain('crossOriginIsolated')
+    expect(gliner).toMatch(/config\.multiThread \?\? isIsolated\(\)/)
   })
 
-  it('isolates the extension pages, or the offscreen document has no threads', () => {
-    // An MV3 page is cross-origin isolated only if the manifest says so.
-    expect(build).toContain('cross_origin_embedder_policy')
-    expect(build).toContain('cross_origin_opener_policy')
+  it('runs the offscreen document single-threaded, whatever isolation says', () => {
+    // ORT spawns worker threads from `blob:` URLs and the MV3 CSP is
+    // `script-src 'self' 'wasm-unsafe-eval'`, which does not permit them and
+    // cannot be widened. Isolation is necessary and not sufficient, so the
+    // offscreen document must state this rather than infer it.
+    expect(offscreen).toMatch(/multiThread:\s*false/)
   })
 
-  it('serves the weights with CORP, which the extension’s COEP requires', () => {
-    // Coupled on purpose: under `require-corp` the offscreen document cannot
-    // fetch the model from the app's origin unless that origin opts in.
-    expect(vite).toContain('Cross-Origin-Resource-Policy')
+  it('does not declare isolation it cannot use', () => {
+    // Declaring COEP made `crossOriginIsolated` true, which switched threading
+    // on so that it could fail — `importScripts` errors, then inference
+    // throwing `Cannot convert 1 to a BigInt`. It also made every cross-origin
+    // fetch need CORP, which is a deployment constraint bought for nothing.
+    expect(build).not.toMatch(/cross_origin_embedder_policy:\s*\{/)
+  })
+
+  it('still isolates the app, where threading does work', () => {
+    // An ordinary page's CSP permits blob workers, so the app threads and the
+    // extension does not. Same code, different context.
     expect(vite).toContain('Cross-Origin-Embedder-Policy')
     // `server` is dev only; the built app needs it too.
     expect(vite).toMatch(/preview:\s*\{\s*headers/)
