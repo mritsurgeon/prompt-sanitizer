@@ -117,11 +117,26 @@ for (const entry of FILES) {
 await mkdir(ORT_TARGET, { recursive: true })
 const wasmSource = join(GLINER_ORT, 'dist', ORT_WASM)
 const wasmTarget = join(ORT_TARGET, ORT_WASM)
-if ((await sizeOf(wasmTarget)) > 0) {
-  console.log(`  have  ${`ort/${ORT_WASM}`.padEnd(28)} ${mb(await sizeOf(wasmTarget))}`)
+/**
+ * Replaced when it differs, not skipped when it exists.
+ *
+ * A plain "have it already" check is what let the wrong binary persist: the
+ * copy that used to come from the hoisted 1.14 package is already on disk in
+ * every existing checkout, and re-running this would have left it there.
+ * Compared by size rather than hashed — the versions differ by a megabyte,
+ * and reading 10 MB twice to tell apart files that a byte-identical copy
+ * makes equal anyway is not worth it.
+ */
+const sourceSize = await sizeOf(wasmSource)
+if ((await sizeOf(wasmTarget)) === sourceSize) {
+  console.log(`  have  ${`ort/${ORT_WASM}`.padEnd(28)} ${mb(sourceSize)}`)
 } else {
+  const stale = (await sizeOf(wasmTarget)) > 0
   await copyFile(wasmSource, wasmTarget)
-  console.log(`  copy  ${`ort/${ORT_WASM}`.padEnd(28)} ${mb(await sizeOf(wasmTarget))}`)
+  console.log(
+    `  ${stale ? 'fix ' : 'copy'}  ${`ort/${ORT_WASM}`.padEnd(28)} ${mb(sourceSize)}` +
+      (stale ? '  (replaced a runtime that did not match)' : ''),
+  )
 }
 total += await sizeOf(wasmTarget)
 
