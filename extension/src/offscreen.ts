@@ -88,6 +88,23 @@ registerLocalModel(
   }),
 )
 
+/**
+ * Say which build this is, and that the page loaded at all.
+ *
+ * An offscreen document created by an earlier load survives a rebuild, and
+ * `hasDocument()` reports it as present, so Chrome will not replace it with
+ * new code — a stale document is indistinguishable from a fixed one that
+ * still fails. This line settles it, and its absence says the module threw
+ * before registering its listener, which is the other way this page goes
+ * quiet.
+ */
+console.info(
+  `[ai-safe] offscreen ready — ${
+    (runtime.runtime.getManifest() as { version_name?: string; version: string })
+      .version_name ?? 'unknown build'
+  }`,
+)
+
 // Attachments are scanned here, so this context needs the allowlist too — a
 // document full of the user's own signature should be no noisier than a prompt.
 void installAllowlist()

@@ -318,6 +318,41 @@ export function createGlinerConfirmer(
 
       const threaded = config.multiThread ?? isIsolated()
 
+      /**
+       * Set on the runtime, because `gliner`'s flag does not turn threads off.
+       *
+       * It only ever turns them on:
+       *
+       *     if (multiThread) { this.ort.env.wasm.numThreads = maxThreads }
+       *
+       * With `multiThread: false` it simply does not touch `numThreads`, so
+       * ORT keeps its own default and spawns a worker pool anyway. In an MV3
+       * extension page those workers are created from `blob:` URLs, which the
+       * content security policy forbids — hence a run of `importScripts`
+       * failures and then inference throwing `Cannot convert 1 to a BigInt`
+       * against a half-started runtime.
+       *
+       * Reaching the same module `gliner` will use: the extension aliases
+       * `onnxruntime-web` to the WASM-only build and the app resolves the real
+       * package, but either way it is one module instance, so setting it here
+       * is setting it there.
+       */
+      if (!isNode) {
+        try {
+          const ort = (await import('onnxruntime-web')) as unknown as {
+            env?: { wasm?: { numThreads?: number } }
+          }
+          if (ort.env?.wasm) {
+            ort.env.wasm.numThreads = threaded
+              ? (globalThis.navigator?.hardwareConcurrency ?? 1)
+              : 1
+          }
+        } catch {
+          // Nothing to pin. The session below still gets built, and if the
+          // runtime is genuinely absent it fails there with a clearer error.
+        }
+      }
+
       const build = async (ep: 'wasm' | 'webgpu') => {
         const instance = new Gliner({
           tokenizerPath: variant.modelName,
