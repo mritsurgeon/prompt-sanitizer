@@ -7,6 +7,9 @@ import { reviewAttachment } from './attachment'
 import { runDeepCheck } from './deep'
 import type { AttachmentRequest, AttachmentResponse, DeepCheckResponse } from './protocol'
 
+/** Substituted by `build.mjs`; see the note beside the `console.info` below. */
+declare const __BUILD_STAMP__: string
+
 /**
  * Stage two's host — where GLiNER runs.
  *
@@ -88,23 +91,6 @@ registerLocalModel(
   }),
 )
 
-/**
- * Say which build this is, and that the page loaded at all.
- *
- * An offscreen document created by an earlier load survives a rebuild, and
- * `hasDocument()` reports it as present, so Chrome will not replace it with
- * new code — a stale document is indistinguishable from a fixed one that
- * still fails. This line settles it, and its absence says the module threw
- * before registering its listener, which is the other way this page goes
- * quiet.
- */
-console.info(
-  `[ai-safe] offscreen ready — ${
-    (runtime.runtime.getManifest() as { version_name?: string; version: string })
-      .version_name ?? 'unknown build'
-  }`,
-)
-
 // Attachments are scanned here, so this context needs the allowlist too — a
 // document full of the user's own signature should be no noisier than a prompt.
 void installAllowlist()
@@ -181,3 +167,25 @@ runtime.runtime.onMessage.addListener(
     return true
   },
 )
+
+/**
+ * Last line in the file, and that is the whole point.
+ *
+ * An offscreen document created by an earlier load survives a rebuild:
+ * `hasDocument()` reports it as present, so Chrome will not replace it with
+ * new code, and a stale document is indistinguishable from a fixed one that
+ * still fails. So the page has to say which build it is.
+ *
+ * It says it *here*, after both listeners are attached, because the first
+ * version of this line said it first and read the build off
+ * `runtime.getManifest()`. Chrome exposes only the messaging slice of
+ * `chrome.runtime` to an offscreen context — `getURL` is always-available and
+ * worked, `getManifest` is not and threw — so the diagnostic took both
+ * `addListener` calls down with it. The page loaded, registered nothing, and
+ * every deep check timed out into "closer look unavailable": the exact
+ * silence this line exists to rule out.
+ *
+ * Printed last, it is a stronger signal than it was: not "the module
+ * started", but "this page is listening, and it is this build".
+ */
+console.info(`[ai-safe] offscreen ready — ${__BUILD_STAMP__}`)

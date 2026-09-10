@@ -124,6 +124,20 @@ const CSP = {
 const STAMP = new Date().toISOString().slice(0, 16).replace('T', ' ')
 
 /**
+ * The same stamp, as a compile-time constant.
+ *
+ * The offscreen document cannot read it back off the manifest: Chrome exposes
+ * only the messaging slice of `chrome.runtime` to an offscreen context, so
+ * `getManifest` is undefined there while `getURL` — always-available — is not.
+ * Calling it threw at module top level and took both `onMessage` listeners
+ * with it, so the page loaded, registered nothing, and every deep check
+ * timed out into "closer look unavailable". A diagnostic that can break the
+ * thing it reports on is worse than no diagnostic; substituted at build time
+ * it cannot fail at all.
+ */
+const BUILD_STAMP = `${BASE.version} (built ${STAMP})`
+
+/**
  * Cross-origin isolation is deliberately NOT declared.
  *
  * It was, briefly, to give the offscreen document `SharedArrayBuffer` so the
@@ -146,7 +160,7 @@ const MANIFESTS = {
   chrome: {
     ...BASE,
     // Chrome-only; Firefox warns on unknown keys, so it stays out of that one.
-    version_name: `${BASE.version} (built ${STAMP})`,
+    version_name: BUILD_STAMP,
     // `offscreen` gives the second-stage model somewhere to stay resident. A
     // service worker is killed on idle, which would evict 183 MB of weights
     // between one prompt and the next.
@@ -226,6 +240,7 @@ for (const [name, entry] of ENTRIES) {
     resolve: {
       alias: { '@': join(root, 'src'), ...(splittable ? ORT_ALIASES : {}) },
     },
+    define: { __BUILD_STAMP__: JSON.stringify(BUILD_STAMP) },
     build: {
       outDir: out,
       emptyOutDir: name === 'background',

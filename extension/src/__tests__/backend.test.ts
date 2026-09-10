@@ -109,3 +109,50 @@ describe('the confirmer reports which backend ran', () => {
     expect(confirmer.runtime?.labelCount).toBeGreaterThan(0)
   })
 })
+
+describe('the offscreen document only touches APIs it has', () => {
+  const offscreen = read('../offscreen.ts')
+  const build = read('../../build.mjs')
+
+  /**
+   * Chrome gives an offscreen document the messaging slice of `chrome.runtime`
+   * and little else. The trap is that the slice is not obviously a slice:
+   * `getURL` works there, so the object looks like the full `chrome.runtime`
+   * until something reaches past the edge.
+   *
+   * `getManifest` is past the edge. A build stamp read from it threw at module
+   * top level and took both `onMessage.addListener` calls with it, so the page
+   * loaded, registered no listener, and every deep check timed out into
+   * "closer look unavailable" — the model never ran, and nothing said so.
+   */
+  const AVAILABLE = new Set([
+    'getURL',
+    'onMessage',
+    'sendMessage',
+    'connect',
+    'id',
+    'lastError',
+  ])
+
+  it('never reaches past the messaging slice', () => {
+    const used = [...offscreen.matchAll(/\bruntime\.runtime\.(\w+)/g)].map((m) => m[1])
+    expect(used.length).toBeGreaterThan(0)
+    expect(used.filter((name) => !AVAILABLE.has(name))).toEqual([])
+  })
+
+  it('takes its build stamp from the build, not from the manifest', () => {
+    expect(offscreen).toContain('__BUILD_STAMP__')
+    // The `declare` alone compiles happily and is `undefined` at runtime, so
+    // the substitution has to be checked at the other end too.
+    expect(build).toMatch(/define:\s*\{\s*__BUILD_STAMP__:/)
+  })
+
+  it('says it is ready only once it is listening', () => {
+    // Printed before the listeners, the line proves the module started.
+    // Printed after them, it proves the page can actually answer — which is
+    // the question being asked when somebody goes looking for it.
+    const ready = offscreen.lastIndexOf('offscreen ready')
+    const listening = offscreen.lastIndexOf('onMessage.addListener')
+    expect(ready).toBeGreaterThan(listening)
+  })
+})
