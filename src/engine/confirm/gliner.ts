@@ -4,6 +4,7 @@ import {
   isSentenceStarter,
   isTechAcronym,
 } from '../gazetteer'
+import type { ExecutionProvider } from '../metrics'
 import type { CategoryId } from '../types'
 import type {
   ConfirmationRequest,
@@ -105,6 +106,22 @@ export interface GlinerOptions {
   /** Entity label -> category. Overridden for PII-tuned checkpoints. */
   labels?: Record<string, CategoryId>
   /**
+   * Which ONNX backend to ask for.
+   *
+   * Must be stated by the host, because the answer depends on what that host
+   * *bundled* and nothing here can see that. The extension ships the WASM-only
+   * runtime and aliases the GPU backends to a throwing stub — 16 kB against
+   * 44 MB — so asking for WebGPU there fails at session construction. It did:
+   * feature-detecting on `navigator.gpu`, which exists in an offscreen
+   * document, requested a backend that had been deliberately removed, and the
+   * confirmer fell back to deep-context on every single escalation without
+   * anyone noticing.
+   *
+   * Left undefined it feature-detects, which is right for the app, where the
+   * whole runtime is present.
+   */
+  executionProvider?: 'wasm' | 'webgpu'
+  /**
    * Provisioned size of this checkpoint.
    *
    * Not cosmetic: the escalation gate keys on whether a confirmer has weights
@@ -183,6 +200,8 @@ export function createGlinerConfirmer(
   let loading: Promise<void> | null = null
   let loadMs: number | null = null
   let perCandidateMs: number | null = null
+  /** The backend that actually started, for the metrics envelope. */
+  let provider: ExecutionProvider = 'none'
 
   /** Which checkpoint we settled on, once the question has been asked. */
   let resolved: Resolved | null = null
@@ -260,33 +279,69 @@ export function createGlinerConfirmer(
       transformers.env.allowLocalModels = true
       transformers.env.localModelPath = config.basePath
 
-      const instance = new Gliner({
-        tokenizerPath: variant.modelName,
-        // Node takes only a path; the web build also wants an execution
-        // provider and is worth letting use more than one thread.
-        onnxSettings: isNode
-          ? { modelPath: variant.modelFile }
-          : {
-              modelPath: variant.modelFile,
-              // WebGPU where the browser has it — it moves the one-off startup
-              // from seconds to under a second on a laptop GPU, and that
-              // startup is the only part of this anybody notices. WASM
-              // otherwise, which is every browser; the model runs either way.
-              executionProvider: hasWebGPU() ? 'webgpu' : 'wasm',
-              // Explicit, because gliner's default is a jsDelivr CDN URL and a
-              // scan must never depend on a third party being reachable.
-              wasmPaths: config.wasmPaths,
-              multiThread: true,
-            },
-        maxWidth: config.maxWidth,
-        modelType: 'span-level',
-        transformersSettings: {
-          allowLocalModels: true,
-          useBrowserCache: !isNode,
-        },
-      })
+      const build = async (ep: 'wasm' | 'webgpu') => {
+        const instance = new Gliner({
+          tokenizerPath: variant.modelName,
+          // Node takes only a path; the web build also wants an execution
+          // provider and is worth letting use more than one thread.
+          onnxSettings: isNode
+            ? { modelPath: variant.modelFile }
+            : {
+                modelPath: variant.modelFile,
+                executionProvider: ep,
+                // Explicit, because gliner's default is a jsDelivr CDN URL and
+                // a scan must never depend on a third party being reachable.
+                wasmPaths: config.wasmPaths,
+                multiThread: true,
+              },
+          maxWidth: config.maxWidth,
+          modelType: 'span-level',
+          transformersSettings: {
+            allowLocalModels: true,
+            useBrowserCache: !isNode,
+          },
+        })
+        await instance.initialize()
+        return instance
+      }
 
-      await instance.initialize()
+      /**
+       * What to try, in order.
+       *
+       * A host that named a provider gets that one and nothing else — the
+       * extension bundles only WASM, and quietly starting something it did not
+       * ship would be worse than failing. Otherwise WebGPU first, because it
+       * moves the one-off startup from seconds to under a second, then WASM,
+       * which every browser has.
+       *
+       * The fallback exists because the alternative is what happened before:
+       * one unavailable backend meant no model at all, silently, on every
+       * escalation. A slower backend is a far better answer than none.
+       */
+      const wanted: Array<'wasm' | 'webgpu'> = config.executionProvider
+        ? [config.executionProvider]
+        : hasWebGPU()
+          ? ['webgpu', 'wasm']
+          : ['wasm']
+
+      let instance: Awaited<ReturnType<typeof build>> | null = null
+      let firstFailure: unknown = null
+      for (const ep of isNode ? (['wasm'] as const) : wanted) {
+        try {
+          instance = await build(ep)
+          provider = isNode ? 'none' : ep === 'webgpu' ? 'webgpu' : 'wasm-threaded'
+          break
+        } catch (cause) {
+          firstFailure ??= cause
+          console.warn(
+            `[ai-safe] the ${ep} backend did not start; ` +
+              `${ep === wanted[wanted.length - 1] ? 'no backend left to try' : 'trying the next one'}.`,
+            cause,
+          )
+        }
+      }
+      if (!instance) throw firstFailure ?? new Error('no ONNX backend started')
+
       model = instance as unknown as {
         inference: (a: unknown) => Promise<GlinerSpan[][]>
       }
@@ -458,6 +513,16 @@ export function createGlinerConfirmer(
     confirm,
     get loaded() {
       return model !== null
+    },
+    /**
+     * The backend that actually started.
+     *
+     * Reported rather than assumed: this was never populated, so every
+     * envelope said `ep: 'none'` even when the model was running — and `ep`
+     * exists precisely to answer whether WebGPU is worth its bundle size.
+     */
+    get runtime() {
+      return { ep: provider, labelCount: Object.keys(config.labels).length }
     },
   }
 }

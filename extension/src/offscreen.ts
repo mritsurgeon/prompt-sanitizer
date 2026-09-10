@@ -53,6 +53,19 @@ registerLocalModel(
     // over the network would defeat the point of the CSP, and MV3 forbids it
     // regardless.
     wasmPaths: runtime.runtime.getURL('wasm/'),
+    /**
+     * WASM, stated rather than detected.
+     *
+     * `build.mjs` aliases the two GPU backends to a throwing stub and ships
+     * the WASM-only runtime — 16 kB instead of 44 MB. Feature-detecting on
+     * `navigator.gpu`, which exists in an offscreen document, therefore asked
+     * for a backend that had been deliberately removed: session construction
+     * threw, the confirmer caught it, and every escalation in this extension
+     * silently fell back to deep-context. The model had never once run here.
+     *
+     * The host knows what the host bundled. Nothing inside the confirmer can.
+     */
+    executionProvider: 'wasm',
   }),
 )
 
