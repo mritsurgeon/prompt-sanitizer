@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { scan } from '../detect'
+import { category } from '../categories'
 import { ALL_CASES, type Case } from './corpus'
 
 /**
@@ -140,5 +141,81 @@ describe('entity consistency', () => {
     const people = findings.filter((f) => f.category === 'PERSON')
     expect(people.length).toBeGreaterThanOrEqual(2)
     expect(people.every((p) => p.tier === 'high')).toBe(true)
+  })
+})
+
+describe('a credential in a spreadsheet cell', () => {
+  const AWS_SECRET = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+  const secretsIn = (text: string) =>
+    scan(text).findings.filter((f) => category(f.category).group === 'secret')
+
+  /**
+   * A spreadsheet is not source code.
+   *
+   * `AWS secret key` in one cell and the key in the next reaches the engine
+   * as `AWS secret key | wJalr…`, and the assignment rule missed it twice
+   * over: it spelled the label `secret[_-]?key`, which does not allow the
+   * space, and it accepted `is`, `:`, `=` and `=>` as separators but not the
+   * `|` that `extractFile` joins columns with. Either alone would have been
+   * enough to lose it.
+   *
+   * It looked like it worked because `secret_key = …` always matched — the
+   * form a test writes and a spreadsheet never produces.
+   */
+  it('finds one behind a column separator', () => {
+    expect(secretsIn(`AWS secret key | ${AWS_SECRET}`)).toHaveLength(1)
+  })
+
+  it('finds one behind a tab, which is what a .tsv gives', () => {
+    expect(secretsIn(`api key\t${AWS_SECRET}`)).toHaveLength(1)
+  })
+
+  it.each([
+    'AWS secret key',
+    'secret key',
+    'secret access key',
+    'api key',
+    'client secret',
+  ])('reads "%s" as a credential label', (label) => {
+    expect(secretsIn(`${label} = ${AWS_SECRET}`)).toHaveLength(1)
+  })
+
+  it('keeps the value, not the label, as the finding', () => {
+    // The label is in the pattern but outside the capture. A finding that
+    // swallowed `AWS secret key | ` would redact the header too, and in a
+    // spreadsheet the header is how the reader knows what the column was.
+    const [found] = secretsIn(`AWS secret key | ${AWS_SECRET}`)
+    expect(found.value).toBe(AWS_SECRET)
+  })
+
+  it('takes a value containing ~, as Azure client secrets do', () => {
+    // An unquoted value stops at the first character outside the set, so
+    // omitting `~` did not shorten the match — it lost it entirely.
+    expect(secretsIn('client secret | Q~8xN2vKp4mZ1rT6yW9bE3aH5jL7nC0dF')).toHaveLength(1)
+  })
+
+  /**
+   * Allowing a space in the label widens it into ordinary prose, where
+   * "the secret key is" now matches the pattern. What stops that becoming a
+   * false positive is the validator, not the pattern — the same validator
+   * that already had to reject `api_key = changeme`.
+   */
+  it.each([
+    'The secret key is stored in the vault, not in the repo.',
+    'Please rotate the api key before Friday.',
+    'Your access token has expired; sign in again.',
+    'Ask Sarah whether the client secret is documented anywhere.',
+    'secret key | see the password manager',
+    'Column headers: Field | Value | Notes',
+  ])('does not fire on prose: %s', (line) => {
+    expect(secretsIn(line)).toHaveLength(0)
+  })
+
+  it('no longer shreds the key into name candidates', () => {
+    // Undetected, the key was three capitalised fragments — `JalrXUtnFEMI`,
+    // `MDENG`, `PxRfiCYEXAMPLEKEY` — offered as possible people. Claiming a
+    // span as a secret is what stops the entity layer guessing at it.
+    const { recoverable } = scan(`AWS secret key | ${AWS_SECRET}`)
+    expect(recoverable.filter((r) => AWS_SECRET.includes(r.value))).toHaveLength(0)
   })
 })

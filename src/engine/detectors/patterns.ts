@@ -176,8 +176,33 @@ export const PATTERN_RULES: PatternRule[] = [
      */
     name: 'Secret or key assignment',
     category: 'API_KEY',
+    /**
+     * Separated by a `|`, or by a bare tab, as well as by `=`; and spelled
+     * with spaces as well as underscores.
+     *
+     * Both because a spreadsheet is not source code. `AWS secret key` in one
+     * cell and the key in the next arrives here as
+     * `AWS secret key | wJalr…` — a label this rule did not recognise, joined
+     * by a separator it did not accept, so it missed on two counts at once
+     * and the credential went through untouched. `secret_key = …` matched
+     * all along, which is why it looked like it worked.
+     *
+     * `secret[_ -]?(?:access[_ -]?)?key` also takes AWS's own name for the
+     * thing, "secret access key". A bare tab counts as a separator on its
+     * own, which is what a `.tsv` gives; two spaces do not, because column
+     * alignment and ordinary prose are indistinguishable at that point.
+     *
+     * `~` is in the unquoted value set because Azure client secrets use
+     * it, and an unquoted value stops at the first character not in the
+     * set — so leaving it out did not shorten the match, it lost it.
+     *
+     * Allowing a space widens the label into ordinary prose — "the secret
+     * key is" now matches where it did not. The validator below is what
+     * makes that safe: it already had to reject `api_key = changeme`, and
+     * prose fails it for the same reason a placeholder does.
+     */
     pattern:
-      /\b(?:api[_-]?key|apikey|secret[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?token|session[_-]?key|app[_-]?secret|credential|secret|token)\s*(?:is|:|=|=>)\s*(?:"([^"\n]{6,120})"|'([^'\n]{6,120})'|([A-Za-z0-9_\-.=+/]{8,120}))/gi,
+      /\b(?:api[_ -]?key|apikey|secret[_ -]?(?:access[_ -]?)?key|client[_ -]?secret|access[_ -]?token|auth[_ -]?token|refresh[_ -]?token|private[_ -]?token|session[_ -]?key|app[_ -]?secret|credential|secret|token)(?:[ ]*(?:is|:|=|=>|\|)[ \t]*|\t+)(?:"([^"\n]{6,120})"|'([^'\n]{6,120})'|([A-Za-z0-9_\-.=+/~]{8,120}))/gi,
     valueGroup: -1,
     confidence: 0.92,
     validate: (v) =>
