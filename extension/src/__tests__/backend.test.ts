@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 /**
@@ -154,5 +154,52 @@ describe('the offscreen document only touches APIs it has', () => {
     const ready = offscreen.lastIndexOf('offscreen ready')
     const listening = offscreen.lastIndexOf('onMessage.addListener')
     expect(ready).toBeGreaterThan(listening)
+  })
+})
+
+describe('the runtime is shipped the binary it will ask for', () => {
+  const build = read('../../build.mjs')
+  const offscreen = read('../offscreen.ts')
+  const dist = new URL('../../../node_modules/onnxruntime-web/dist/', import.meta.url)
+
+  /**
+   * ORT picks one of four `.wasm` files at init from two booleans, and the
+   * extension ships exactly one of them. Nothing connects the two: the build
+   * hardcodes a name, the runtime computes one, and when they disagree the
+   * fetch 404s. Under `chrome-extension://` that surfaces as
+   * `TypeError: Failed to fetch`, which ORT rethrows as `no available backend
+   * found` — by then the filename is three layers out of sight.
+   *
+   * That is what happened. Pinning `numThreads` to 1 flipped the `threaded`
+   * boolean, the runtime started asking for `ort-wasm-simd.wasm`, and the
+   * build was still copying `ort-wasm-simd-threaded.wasm`.
+   *
+   * So the expected name is re-derived here from the runtime's own selector
+   * rather than written down a second time.
+   */
+  const selector =
+    /\(([a-z]),([a-z])\)=>\2\?\1\?"([\w.-]+)":"([\w.-]+)":\1\?"([\w.-]+)":"([\w.-]+)"/.exec(
+      readFileSync(new URL('ort.wasm.min.js', dist), 'utf8'),
+    )
+
+  const shipped = /const ORT_WASM = '([\w.-]+)'/.exec(build)?.[1]
+
+  it('can still find the selector it derives the name from', () => {
+    // Minified source, so this is a shape assumption. If an upgrade breaks it
+    // the right answer is to re-read the selector, not to delete the check —
+    // the alternative is trusting a hardcoded filename again.
+    expect(selector, 'ORT no longer matches the known selector shape').not.toBeNull()
+  })
+
+  it('ships the file the pinned thread count selects', () => {
+    // `threaded` is `numThreads > 1`, and the offscreen document pins it off.
+    expect(offscreen).toMatch(/multiThread:\s*false/)
+    // Group 5 is the (simd, not threaded) arm of the selector.
+    expect(shipped).toBe(selector?.[5])
+    expect(existsSync(new URL(shipped!, dist))).toBe(true)
+  })
+
+  it('does not ship a threaded binary it can never request', () => {
+    expect(shipped).not.toContain('threaded')
   })
 })

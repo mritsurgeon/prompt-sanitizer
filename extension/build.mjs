@@ -275,8 +275,35 @@ await cp(
  * Executable code is not fetched over the network — MV3 forbids it, and it
  * would defeat the point of the CSP. Only the model *weights* are fetched, and
  * only from the origin that provisioned them.
+ *
+ * ## Why this exact filename
+ *
+ * The runtime ships four binaries and picks one at init from two booleans:
+ *
+ * ```js
+ * const d = (simd, threaded) =>
+ *   threaded ? (simd ? 'ort-wasm-simd-threaded.wasm' : 'ort-wasm-threaded.wasm')
+ *            : (simd ? 'ort-wasm-simd.wasm'          : 'ort-wasm.wasm')
+ * ```
+ *
+ * `threaded` is `numThreads > 1`, and the offscreen document pins `numThreads`
+ * to 1 because MV3's CSP forbids the `blob:` workers threading needs. So the
+ * *threaded* binary — the one this line used to name — became unreachable the
+ * moment threading was turned off, and the runtime asked for a file that was
+ * not there. A missing file under `chrome-extension://` surfaces as
+ * `TypeError: Failed to fetch`, which ORT reports as `no available backend
+ * found`: three layers away from the actual cause, which is a filename.
+ *
+ * Only the SIMD variant is shipped, not both. `simd` is a
+ * `WebAssembly.validate` probe that has passed since Chrome 91, and
+ * `chrome.offscreen` — without which none of this file's model path exists —
+ * requires Chrome 109. The non-SIMD build cannot be reached from here, so
+ * 8.8 MB of it would be shipped to be ignored.
+ *
+ * `backend.test.ts` re-derives this name from the runtime's own selector, so
+ * an upgrade that renames the binaries fails a test rather than a browser.
  */
-const ORT_WASM = 'ort-wasm-simd-threaded.wasm'
+const ORT_WASM = 'ort-wasm-simd.wasm'
 await mkdir(join(out, 'wasm'), { recursive: true })
 await cp(
   join(root, 'node_modules/onnxruntime-web/dist', ORT_WASM),
